@@ -1,0 +1,24 @@
+[Unit]
+Description=Live VLM Server
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/home/jim/start_live_vlm_server.sh
+ExecStop=/usr/bin/docker stop -t 10 live_vlm_server
+Restart=no
+User=jim
+Environment=HOME=/home/jim
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Timeout settings for graceful shutdown
+# Give SIGTERM 30 seconds, then send SIGKILL
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+
+[Install]
+WantedBy=multi-user.target

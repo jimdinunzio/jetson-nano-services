@@ -1,0 +1,12 @@
+[Unit]
+Description=Jetson Ollama Container
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+ExecStart=/home/jim/Documents/git/jetson-containers/jetson-containers run --no-tty --name ollama dustynv/ollama:0.6.8-r36.4-cu126-22.04 ollama serve
+ExecStop=/usr/bin/docker stop ollama 
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
