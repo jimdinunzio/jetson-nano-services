@@ -83,9 +83,9 @@ jetson-containers run \
   --no-tty \
   --name "$CONTAINER_NAME" \
   -e PIP_INDEX_URL=https://pypi.org/simple \
-  --workdir /opt/nanoowl/examples/tree_demo \
+  --workdir /data/nano_owl \
   my_nano_owl \
-  python3 tree_demo.py ../../data/owl_image_encoder_patch32.engine 2>&1 | tee -a "$LOG_FILE"
+  python3 nano_owl_server.py 2>&1 | tee -a "$LOG_FILE"
 
 EXIT_CODE=${PIPESTATUS[0]}
 
