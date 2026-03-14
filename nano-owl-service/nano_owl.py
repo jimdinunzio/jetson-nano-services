@@ -5,10 +5,14 @@ NanoOwl - Open-vocabulary object detection using NVIDIA NanoOWL tree predictor.
 Provides a threaded, controllable interface for running open-vocabulary
 object detection on video frames.
 
-Supports enable/disable for stopping camera captures and reducing resource usage.
+Frame source is chosen at init: "camera" for local USB camera, or "network"
+for frames pushed over the wire via push_frame().
+
+Supports enable/disable for stopping captures and reducing resource usage.
 Auto-disables after 30s of no get_detections() calls.
 """
 
+import io
 import time
 import threading
 import cv2
@@ -25,20 +29,27 @@ class NanoOwl:
     Run in a separate thread with start_up() as the entry point.
     Starts in disabled mode - call enable() to begin processing.
 
-    Frame capture is isolated in _capture_frame() to allow future
-    replacement with a network frame source.
+    Frame source is set at init and fixed for the lifetime of the instance:
+      - "camera": captures from a local video device
+      - "network": frames are pushed via push_frame()
     """
 
     AUTO_DISABLE_TIMEOUT = 30.0
 
-    def __init__(self, image_encode_engine, video_input=0, resolution=(640, 480)):
+    def __init__(self, image_encode_engine, frame_source="camera",
+                 video_input=0, resolution=(640, 480)):
         """
         Args:
             image_encode_engine: Path to the TensorRT engine for OWL image encoder.
-            video_input: Camera device index or video source path.
-            resolution: Tuple of (width, height) for camera resolution.
+            frame_source: "camera" for local USB camera, "network" for pushed frames.
+            video_input: Camera device index or video source path (camera mode only).
+            resolution: Tuple of (width, height) for camera resolution (camera mode only).
         """
+        if frame_source not in ("camera", "network"):
+            raise ValueError(f"frame_source must be 'camera' or 'network', got '{frame_source}'")
+
         self.image_encode_engine = image_encode_engine
+        self._frame_source = frame_source
         self.video_input = video_input
         self.resolution = resolution
 
@@ -62,28 +73,75 @@ class NanoOwl:
         # Auto-disable tracking
         self._last_get_time = time.time()
 
-        # Camera (initialized in start_up)
+        # Camera (camera mode only, initialized in start_up)
         self._camera = None
 
+        # Network frame buffer (network mode only)
+        self._network_frame = None
+        self._network_frame_seq = None
+        self._network_frame_size = None  # (w, h), set from first pushed frame
+        self._network_frame_event = threading.Event()
+
+    def get_frame_source(self):
+        return self._frame_source
+
     def enable(self):
-        """Enable detection processing and camera captures."""
+        """Enable detection processing."""
         with self._lock:
             self._enabled = True
             self._last_get_time = time.time()
         self._enabled_event.set()
 
     def disable(self):
-        """Disable detection processing and release camera."""
+        """Disable detection processing and release resources."""
         with self._lock:
             self._enabled = False
             self._detections = None
         self._enabled_event.clear()
         self._detections_ready.clear()
-        self._release_camera()
+        if self._frame_source == "camera":
+            self._release_camera()
+        else:
+            with self._lock:
+                self._network_frame = None
+                self._network_frame_seq = None
+            self._network_frame_event.clear()
 
     def is_enabled(self):
         with self._lock:
             return self._enabled
+
+    def push_frame(self, jpeg_bytes, seq):
+        """
+        Push a JPEG-encoded frame for detection (network mode only).
+
+        Args:
+            jpeg_bytes: Raw JPEG bytes of the frame.
+            seq: Integer sequence number assigned by the client.
+
+        Returns:
+            True on success, False if not in network mode or decode fails.
+        """
+        if self._frame_source != "network":
+            return False
+        try:
+            frame = PIL.Image.open(io.BytesIO(jpeg_bytes)).convert("RGB")
+        except Exception as e:
+            print(f"[NanoOwl] Error decoding pushed frame: {e}", flush=True)
+            return False
+
+        with self._lock:
+            if self._network_frame_size is None:
+                self._network_frame_size = frame.size
+                print(f"[NanoOwl] Network frame size set to {frame.size}", flush=True)
+            self._network_frame = frame
+            self._network_frame_seq = seq
+            self._last_get_time = time.time()
+            if not self._enabled:
+                self._enabled = True
+        self._network_frame_event.set()
+        self._enabled_event.set()
+        return True
 
     def set_prompt(self, prompt):
         """
@@ -135,11 +193,9 @@ class NanoOwl:
         Returns:
             Dict with keys:
                 - prompt: the current prompt string
-                - nodes: list of tree node dicts, each with:
-                    - name: node label
-                    - parent_index: index of parent node (-1 for root)
-                    - detections: list of {box: [x1,y1,x2,y2], score: float, label: int}
+                - detections: list of detection dicts
                 - inference_time: seconds for the prediction call
+                - frame_seq: sequence number of the frame (network mode, None for camera)
             Returns None if no detections are available yet.
         """
         with self._lock:
@@ -159,7 +215,13 @@ class NanoOwl:
         if not self._enabled:
             self._enabled_event.clear()
             self._detections_ready.clear()
-            self._release_camera()
+            if self._frame_source == "camera":
+                self._release_camera()
+            else:
+                with self._lock:
+                    self._network_frame = None
+                    self._network_frame_seq = None
+                self._network_frame_event.clear()
             return True
         return False
 
@@ -172,20 +234,27 @@ class NanoOwl:
 
     def _capture_frame(self):
         """
-        Capture a frame and return it as a PIL Image.
-
-        This is the frame source entry point. Override or replace this
-        method to provide frames from an alternative source (e.g. network).
+        Capture a frame from the configured source.
 
         Returns:
-            PIL.Image or None if capture failed.
+            (PIL.Image, seq) tuple. seq is an int for network mode, None for camera.
+            Returns (None, None) if no frame is available.
         """
-        if self._camera is None:
-            return None
-        ret, frame = self._camera.read()
-        if not ret:
-            return None
-        return PIL.Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if self._frame_source == "network":
+            with self._lock:
+                frame = self._network_frame
+                seq = self._network_frame_seq
+                self._network_frame = None
+                self._network_frame_seq = None
+            self._network_frame_event.clear()
+            return frame, seq
+        else:
+            if self._camera is None:
+                return None, None
+            ret, frame = self._camera.read()
+            if not ret:
+                return None, None
+            return PIL.Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)), None
 
     def _release_camera(self):
         if self._camera is not None:
@@ -195,16 +264,9 @@ class NanoOwl:
     @staticmethod
     def _serialize_tree_output(tree_output, tree, image_size):
         """
-        Convert NanoOWL tree output to a serializable list of node dicts.
+        Convert NanoOWL tree output to a serializable list of detection dicts.
 
-        Tree structure:
-          - tree.labels: list of label strings (index 0 is "image")
-          - tree.nodes: list of TreeNode, each with:
-              - op: DETECT or CLASSIFY
-              - input: label index this node operates on
-              - outputs: list of label indices this node produces
-          - tree_output.detections is a dict keyed by node index,
-            each value with .labels (tensor of label indices), .boxes, .scores
+        Each TreeDetection has: box, id, labels, parent_id, scores.
         """
         w, h = image_size
         results = []
@@ -248,12 +310,21 @@ class NanoOwl:
             })
         return results
 
+    def _get_image_size(self, frame):
+        """Get (width, height) from frame, appropriate to the frame source."""
+        if self._frame_source == "network":
+            with self._lock:
+                size = self._network_frame_size
+            return size if size is not None else frame.size
+        else:
+            return self.resolution
+
     def start_up(self):
         """
         Main processing loop - designed to be run in a separate thread.
 
-        Loads the predictor, opens the camera, and continuously captures
-        frames and runs detection when enabled.
+        Loads the predictor, then continuously captures frames and runs
+        detection when enabled.
         """
         self._run_flag = True
 
@@ -265,6 +336,7 @@ class NanoOwl:
         )
         print("[NanoOwl] Predictor loaded.", flush=True)
 
+        print(f"[NanoOwl] Frame source: {self._frame_source}", flush=True)
         print("[NanoOwl] Starting in disabled mode.", flush=True)
 
         while self._run_flag:
@@ -276,13 +348,15 @@ class NanoOwl:
                 self._enabled_event.wait(timeout=0.5)
                 continue
 
-            # Open camera if not already open
-            if self._camera is None:
+            # Open camera if needed (camera mode only)
+            if self._frame_source == "camera" and self._camera is None:
                 self._camera = self._open_camera()
                 print("[NanoOwl] Camera opened.", flush=True)
 
-            frame = self._capture_frame()
+            frame, seq = self._capture_frame()
             if frame is None:
+                if self._frame_source == "network":
+                    self._network_frame_event.wait(timeout=0.5)
                 continue
 
             with self._lock:
@@ -302,13 +376,17 @@ class NanoOwl:
                 t1 = time.perf_counter_ns()
                 dt = (t1 - t0) / 1e9
 
-                det_list = NanoOwl._serialize_tree_output(tree_output, prompt_data['tree'], self.resolution)
+                image_size = self._get_image_size(frame)
+                det_list = NanoOwl._serialize_tree_output(
+                    tree_output, prompt_data['tree'], image_size
+                )
 
                 with self._lock:
                     self._detections = {
                         "prompt": self._prompt_string,
                         "detections": det_list,
                         "inference_time": dt,
+                        "frame_seq": seq,
                     }
                 self._detections_ready.set()
             except Exception as e:
@@ -323,6 +401,7 @@ class NanoOwl:
         """Signal the processing loop to stop."""
         self._run_flag = False
         self._enabled_event.set()
+        self._network_frame_event.set()
 
     def is_running(self):
         return self._run_flag

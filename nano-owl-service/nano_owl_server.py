@@ -11,6 +11,9 @@ Handles SIGTERM gracefully for systemctl stop/restart operations.
 
 Supports enable/disable for low power mode - starts disabled by default.
 Auto-disables after 30s of no get_detections() calls.
+
+Frame source is set at startup: "camera" for local USB camera,
+"network" for frames pushed by the client via push_frame().
 """
 
 import os
@@ -76,6 +79,7 @@ class NanoOwlService:
 
         defaults = {
             'image_encode_engine': self.DEFAULT_IMAGE_ENCODE_ENGINE,
+            'frame_source': 'camera',
             'video_input': self.DEFAULT_VIDEO_INPUT,
             'resolution': self.DEFAULT_RESOLUTION,
         }
@@ -87,6 +91,7 @@ class NanoOwlService:
 
             self.instance = NanoOwl(
                 image_encode_engine=config['image_encode_engine'],
+                frame_source=config['frame_source'],
                 video_input=config['video_input'],
                 resolution=config['resolution'],
             )
@@ -122,7 +127,7 @@ class NanoOwlService:
         return True
 
     def enable(self):
-        """Enable detection processing and camera captures."""
+        """Enable detection processing."""
         with self._instance_lock:
             if self.instance is None:
                 return False
@@ -130,7 +135,7 @@ class NanoOwlService:
             return True
 
     def disable(self):
-        """Disable detection processing and camera captures."""
+        """Disable detection processing."""
         with self._instance_lock:
             if self.instance is None:
                 return False
@@ -142,6 +147,22 @@ class NanoOwlService:
             if self.instance is None:
                 return False
             return self.instance.is_enabled()
+
+    def push_frame(self, frame_data, seq):
+        """
+        Push a JPEG-encoded frame for detection (network mode only).
+
+        Args:
+            frame_data: xmlrpc.client.Binary containing JPEG bytes.
+            seq: Integer sequence number assigned by the client.
+
+        Returns:
+            True on success, False on error.
+        """
+        with self._instance_lock:
+            if self.instance is None:
+                return False
+            return self.instance.push_frame(frame_data.data, int(seq))
 
     def reboot(self):
         """Reboot the Jetson system."""
@@ -189,8 +210,7 @@ class NanoOwlService:
         Get the latest detections (non-blocking).
 
         Returns:
-            Dict with tree-structured detection results, or None if
-            no detections are available yet:
+            Dict with detection results, or None if no detections available:
             {
                 "prompt": str,
                 "detections": [
@@ -205,7 +225,8 @@ class NanoOwlService:
                     },
                     ...
                 ],
-                "inference_time": float
+                "inference_time": float,
+                "frame_seq": int or None
             }
         """
         with self._instance_lock:
@@ -224,6 +245,7 @@ class NanoOwlService:
             is_enabled = has_instance and self.instance.is_enabled()
             thread_alive = self.thread is not None and self.thread.is_alive()
             prompt = self.instance.get_prompt() if has_instance else ""
+            frame_source = self.instance.get_frame_source() if has_instance else ""
 
             return {
                 'has_instance': has_instance,
@@ -231,6 +253,7 @@ class NanoOwlService:
                 'is_enabled': is_enabled,
                 'thread_alive': thread_alive,
                 'prompt': prompt,
+                'frame_source': frame_source,
             }
 
 def main():
@@ -238,6 +261,14 @@ def main():
 
     host = "0.0.0.0"
     port = 8000
+
+    # Parse --frame-source argument
+    frame_source = "camera"
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg == "--frame-source" and i < len(sys.argv) - 1:
+            frame_source = sys.argv[i + 1]
+        elif arg.startswith("--frame-source="):
+            frame_source = arg.split("=", 1)[1]
 
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
@@ -256,9 +287,10 @@ def main():
     print(f"NanoOWL XML-RPC Server", flush=True)
     print(f"Listening on {host}:{port}", flush=True)
     print(f"PID: {os.getpid()}", flush=True)
+    print(f"Frame source: {frame_source}", flush=True)
 
-    print("Creating NanoOwl instance with default parameters...", flush=True)
-    _service._create_instance()
+    print("Creating NanoOwl instance...", flush=True)
+    _service._create_instance({'frame_source': frame_source})
     print("Starting processing thread (in disabled/low-power mode)...", flush=True)
     _service._start_internal()
     print("Processing thread started. Call enable() to start detection.", flush=True)
@@ -268,11 +300,12 @@ def main():
     print(f"  - enable()               - Start detection (exit low power mode)", flush=True)
     print(f"  - disable()              - Stop detection (enter low power mode)", flush=True)
     print(f"  - is_enabled()           - Check if detection is enabled", flush=True)
+    print(f"  - push_frame(data, seq)  - Push a JPEG frame (network mode)", flush=True)
     print(f"  - reboot()               - Reboot the system", flush=True)
     print(f"  - is_running()           - Check if processing thread is running", flush=True)
     print(f"  - set_prompt(prompt)     - Set NanoOWL tree prompt", flush=True)
     print(f"  - get_prompt()           - Get current prompt", flush=True)
-    print(f"  - get_detections()       - Get latest detections (tree-structured)", flush=True)
+    print(f"  - get_detections()       - Get latest detections", flush=True)
     print(f"  - get_status()           - Get comprehensive status", flush=True)
     print(f"  - ping()                 - Check server responsiveness", flush=True)
     print(flush=True)

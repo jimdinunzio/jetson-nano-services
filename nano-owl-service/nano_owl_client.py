@@ -15,6 +15,7 @@ Usage:
 import xmlrpc.client
 import time
 import sys
+import cv2
 from typing import Optional, Dict, List
 
 # Default server address
@@ -130,6 +131,33 @@ class NanoOwlClient:
             return bool(self._proxy.set_prompt(prompt))
         except Exception as e:
             print(f"Set prompt error: {e}")
+            return False
+
+    def push_frame(self, frame, seq: int, jpeg_quality: int = 85) -> bool:
+        """
+        Push a BGR numpy frame to the server for detection.
+
+        Args:
+            frame: numpy BGR array (e.g. from depthai or cv2).
+            seq: Monotonically increasing sequence number. Used to correlate
+                 detections back to the local depth frame.
+            jpeg_quality: JPEG encode quality, 0-100.
+
+        Returns:
+            True on success, False on error.
+        """
+        if not self._connected or self._proxy is None:
+            return False
+        try:
+            ret, buf = cv2.imencode('.jpg', frame,
+                                    [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+            if not ret:
+                print("Error: JPEG encoding failed")
+                return False
+            binary_data = xmlrpc.client.Binary(buf.tobytes())
+            return bool(self._proxy.push_frame(binary_data, seq))
+        except Exception as e:
+            print(f"Push frame error: {e}")
             return False
 
     def clear_prompt(self) -> bool:
