@@ -263,7 +263,7 @@ def main():
     port = 8000
 
     # Parse --frame-source argument
-    frame_source = "camera"
+    frame_source = "network"
     for i, arg in enumerate(sys.argv[1:], 1):
         if arg == "--frame-source" and i < len(sys.argv) - 1:
             frame_source = sys.argv[i + 1]

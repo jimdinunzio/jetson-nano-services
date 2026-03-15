@@ -36,7 +36,7 @@ class NanoOwl:
 
     AUTO_DISABLE_TIMEOUT = 30.0
 
-    def __init__(self, image_encode_engine, frame_source="camera",
+    def __init__(self, image_encode_engine, frame_source="network",
                  video_input=0, resolution=(640, 480)):
         """
         Args:
