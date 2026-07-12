@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.venv/
+# Runtime state: which GPU service was last requested (restored on boot).
+desired_service.txt
