@@ -6,7 +6,7 @@ Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/home/jim/start_live_vlm_server.sh
+ExecStart=/home/jim/Documents/git/jetson-nano-services/live-vlm-service/start_live_vlm_server.sh
 ExecStop=/usr/bin/docker stop -t 10 live_vlm_server
 Restart=no
 User=jim
