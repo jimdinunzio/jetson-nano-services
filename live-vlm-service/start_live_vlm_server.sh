@@ -64,18 +64,15 @@ echo "$(date): Using image: $IMAGE" | tee -a "$LOG_FILE"
     sleep 5  # Wait for log to start populating
     tail -f "$LOG_FILE" 2>/dev/null | while read line; do
         if echo "$line" | grep -qE "$ERROR_PATTERNS"; then
-            echo "$(date): CUDA/Memory error detected! Setting reboot flag..." | tee -a "$LOG_FILE"
+            # The supervisor (service_supervisor.py) owns reboot decisions now,
+            # so we only log the error and stop the container. The supervisor
+            # scans this log, sees the error, and reports needs_reboot to the
+            # remote host instead of rebooting the box mid-switch.
+            echo "$(date): CUDA/Memory error detected! Stopping container..." | tee -a "$LOG_FILE"
             echo "$(date): Error line: $line" | tee -a "$LOG_FILE"
-            
-            # Create reboot flag file
-            touch "$REBOOT_FLAG"
-            
-            # Stop the container to trigger exit - this will cause the main script to check for reboot flag
+
+            # Stop the container to trigger exit.
             docker stop -t 5 "$CONTAINER_NAME" 2>/dev/null || true
-            
-            # Also trigger reboot directly in case the above doesn't work
-            echo "$(date): Triggering reboot from monitor..." | tee -a "$LOG_FILE"
-            nohup sudo reboot &>/dev/null &
             exit 0
         fi
     done
@@ -104,20 +101,8 @@ echo "$(date): Container exited with code $EXIT_CODE" | tee -a "$LOG_FILE"
 # Clean up the container
 docker rm "$CONTAINER_NAME" 2>/dev/null || true
 
-# Check if reboot flag was set
-if [ -f "$REBOOT_FLAG" ]; then
-    echo "$(date): Reboot flag found after container exit. Rebooting..." | tee -a "$LOG_FILE"
-    rm -f "$REBOOT_FLAG"
-    trigger_reboot
-fi
-
-# Check if the exit was due to a crash (non-zero, non-signal exit)
-if [ $EXIT_CODE -ne 0 ] && [ $EXIT_CODE -ne 130 ] && [ $EXIT_CODE -ne 143 ]; then
-    # Check log for error patterns one more time
-    if tail -100 "$LOG_FILE" | grep -qE "$ERROR_PATTERNS"; then
-        echo "$(date): CUDA/Memory error found in log after crash. Rebooting..." | tee -a "$LOG_FILE"
-        trigger_reboot
-    fi
-fi
+# Reboot decisions are owned by the supervisor (service_supervisor.py), which
+# scans this log for the error patterns and reports needs_reboot to the remote
+# host. This script no longer reboots on its own.
 
 exit $EXIT_CODE

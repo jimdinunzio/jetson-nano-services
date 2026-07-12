@@ -211,8 +211,8 @@ class NanoVlm:
         }
         self._video_source = VideoSource(**video_kwargs)
         
-        print("[NanoVlm] Model loaded. Starting in disabled (low power) mode.")
-        print("[NanoVlm] Call enable() to start processing frames.")
+        print("[NanoVlm] Model loaded. Starting in disabled (low power) mode.", flush=True)
+        print("[NanoVlm] Call enable() to start processing frames.", flush=True)
         
         # Main processing loop
         while self._run_flag:

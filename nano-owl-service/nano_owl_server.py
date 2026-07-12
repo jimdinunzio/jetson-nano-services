@@ -79,7 +79,7 @@ class NanoOwlService:
 
         defaults = {
             'image_encode_engine': self.DEFAULT_IMAGE_ENCODE_ENGINE,
-            'frame_source': 'camera',
+            'frame_source': 'network',
             'video_input': self.DEFAULT_VIDEO_INPUT,
             'resolution': self.DEFAULT_RESOLUTION,
         }
