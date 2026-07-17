@@ -1,1 +1,5 @@
 pyserial
+
+# Arm_Lib (bus-servo driver) lives in ros2_ws. Install as a copy, not editable:
+#   .venv/bin/pip install ~/ros2_ws/src/dofbot_ros2/dofbot_arm_lib
+# Snapshot: reinstall and restart to take driver changes.

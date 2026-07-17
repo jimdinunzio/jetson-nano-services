@@ -20,7 +20,7 @@ Ctrl-C to exit. Torque is re-enabled on exit so the arm holds its pose.
 import argparse
 import time
 
-from arm_driver import Arm_Driver
+from Arm_Lib import Arm_Driver
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--port', default='/dev/ttyTHS1')

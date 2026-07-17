@@ -20,7 +20,7 @@ switch the first time you run it.
 import argparse
 import time
 
-from arm_driver import Arm_Driver
+from Arm_Lib import Arm_Driver
 
 # Safe poses from arm_notes.md (angles: s1..s6).
 full_vertical = (90, 90, 90, 90, 90, 50)     # upright / centred, gripper open

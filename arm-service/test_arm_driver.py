@@ -49,7 +49,7 @@ _stub = types.ModuleType('serial')
 _stub.Serial = FakeSerial
 sys.modules['serial'] = _stub
 
-import arm_driver
+from Arm_Lib import arm_driver
 
 # Hard guarantees that the offline test is fully isolated from real hardware.
 assert arm_driver.serial is _stub, 'arm_driver did not bind to the stub serial module'

@@ -14,7 +14,7 @@ the angle back and reports the error.
 import argparse
 import time
 
-from arm_driver import Arm_Driver
+from Arm_Lib import Arm_Driver
 
 ap = argparse.ArgumentParser()
 ap.add_argument('angle', type=int, help='target angle in degrees (0-180)')

@@ -9,7 +9,7 @@ Minimal read check for servo angles. Run this ON THE JETSON with the servos powe
 
 import argparse
 
-from arm_driver import Arm_Driver
+from Arm_Lib import Arm_Driver
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--port', default='/dev/ttyTHS1')

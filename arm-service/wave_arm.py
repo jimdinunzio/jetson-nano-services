@@ -14,7 +14,7 @@ returns to REST.
 import argparse
 import time
 
-from arm_driver import Arm_Driver
+from Arm_Lib import Arm_Driver
 
 # Servo 1-6 angles for each pose.
 REST    = [88, 147,  0,  8,  2, 133]

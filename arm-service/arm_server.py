@@ -24,7 +24,7 @@ import threading
 import time
 from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 
-from arm_driver import Arm_Driver
+from Arm_Lib import Arm_Driver
 
 # Global references for the signal handler
 _server = None
