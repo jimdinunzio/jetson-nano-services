@@ -7,7 +7,11 @@
 LOG_FILE="/tmp/nano_owl_server.log"
 CONTAINER_NAME="nano_owl_server"
 REBOOT_FLAG="/tmp/nano_owl_needs_reboot"
-ERROR_PATTERNS="CUDA out of memory|CUDA: out of memory|OutOfMemoryError|NVML_SUCCESS.*INTERNAL ASSERT FAILED|RuntimeError.*CUDACachingAllocator|cuda runtime error|CUDA error"
+# A GPU/host allocation failure reaches the log as a cuDNN/cuBLAS init or
+# "CUDA error" line: the driver reports the handle it could not create, not the
+# ENOMEM underneath. NvMapMemAllocInternalTagged "error 12" lines are not
+# listed -- they also appear on healthy loads and mid-run, so they are noise.
+ERROR_PATTERNS="CUDA out of memory|CUDA: out of memory|OutOfMemoryError|NVML_SUCCESS.*INTERNAL ASSERT FAILED|RuntimeError.*CUDACachingAllocator|cuda runtime error|CUDA error|cuDNN error|CUDNN_STATUS_INTERNAL_ERROR|CUDNN_STATUS_NOT_INITIALIZED|CUDNN_STATUS_ALLOC_FAILED|CUBLAS_STATUS_ALLOC_FAILED|CUBLAS_STATUS_NOT_INITIALIZED"
 
 # Remove any stale reboot flag
 rm -f "$REBOOT_FLAG"

@@ -85,7 +85,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(SCRIPT_DIR, "desired_service.txt")
 DEFAULT_SERVICE = "owl"
 
-# Same CUDA/OOM patterns the start scripts watch for.
+# Same CUDA/OOM patterns the start scripts watch for. An allocation failure
+# surfaces as the cuDNN/cuBLAS handle it could not create, not as the ENOMEM
+# underneath.
 ERROR_PATTERNS = re.compile(
     r"CUDA out of memory"
     r"|CUDA: out of memory"
@@ -94,6 +96,12 @@ ERROR_PATTERNS = re.compile(
     r"|RuntimeError.*CUDACachingAllocator"
     r"|cuda runtime error"
     r"|CUDA error"
+    r"|cuDNN error"
+    r"|CUDNN_STATUS_INTERNAL_ERROR"
+    r"|CUDNN_STATUS_NOT_INITIALIZED"
+    r"|CUDNN_STATUS_ALLOC_FAILED"
+    r"|CUBLAS_STATUS_ALLOC_FAILED"
+    r"|CUBLAS_STATUS_NOT_INITIALIZED"
 )
 
 # How long to wait for a unit to stop (covers TimeoutStopSec=30 + docker -t 10).
