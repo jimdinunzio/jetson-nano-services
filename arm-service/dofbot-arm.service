@@ -1,0 +1,28 @@
+[Unit]
+Description=DOFBOT Arm XML-RPC Server (ROS 2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/jim/Documents/git/jetson-nano-services/arm-service/start_arm_server.sh
+Restart=on-failure
+RestartSec=5
+User=jim
+Environment=HOME=/home/jim
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=ROS_DISTRO=humble
+# Override the workspace, port or launch log here if needed:
+# Environment=DOFBOT_WS=/home/jim/ros2_ws
+# Environment=DOFBOT_ARM_PORT=8001
+# Environment=DOFBOT_LAUNCH_LOG=/tmp/dofbot_arm_launch.log
+
+# Graceful shutdown: the server needs long enough to bring the ROS launch down
+# (SIGINT, then SIGTERM, then SIGKILL per node) before systemd loses patience.
+TimeoutStopSec=45
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+
+[Install]
+WantedBy=multi-user.target

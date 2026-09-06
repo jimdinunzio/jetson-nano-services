@@ -1,14 +1,19 @@
 #!/bin/bash
 #
-# Arm Service install script.
+# DOFBOT Arm Service install script.
 #
-# Installs + enables the systemd unit. The startup shell runs directly from
-# this checkout (ExecStart points here), so nothing is copied to $HOME.
+# Installs + enables the systemd unit. ExecStart points into this checkout, so
+# nothing is copied and `git pull` is enough to update the server.
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_FILE="arm.service"
+SERVICE_FILE="dofbot-arm.service"
+
+if [ "$SCRIPT_DIR" != "/home/jim/Documents/git/jetson-nano-services/arm-service" ]; then
+    echo "Note: $SERVICE_FILE has an absolute ExecStart; edit it to point at"
+    echo "      $SCRIPT_DIR/start_arm_server.sh before starting the service."
+fi
 
 echo "Installing $SERVICE_FILE to /etc/systemd/system ..."
 sudo install -m 0644 "$SCRIPT_DIR/$SERVICE_FILE" "/etc/systemd/system/$SERVICE_FILE"
