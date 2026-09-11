@@ -15,7 +15,7 @@ alive (the launch), plus one short-lived process per motion command.
 
 Commands:
   - enable_arm()            - start the pick_place stack (move_group + bridge)
-  - disable_arm()           - shut that stack down
+  - disable_arm()           - open the jaws, then shut that stack down
   - pick_can(x, y, z)       - pick the object at x,y,z and carry it
   - place_can()             - place what is being carried
   - move_to_state(name)     - move to a named state ('ready', 'init', ...)
@@ -102,6 +102,19 @@ VISION_TIMEOUT = 60
 # machine-readable output -- not MoveIt's console chatter, which is handed to a
 # human unparsed and always will be.
 VERDICT_PREFIX = 'VERDICT: '
+
+# Seconds allowed for the jaws-open on the way out. Shorter than STATE_TIMEOUT
+# deliberately: systemd is timing that shutdown (TimeoutStopSec in the unit
+# file), and a gripper that has not answered in this long is not going to
+# before the launch has to come down anyway.
+RELEASE_TIMEOUT = 20
+
+# Where reset_arm() leaves the arm unless told otherwise. 'init' is folded low
+# and forward: a reset runs after a pick went wrong, and the next thing to look
+# for the object is the OAK-D on the chassis. Parking with the arm up leaves it
+# standing in that camera's view, blinding whatever has to decide what to do
+# next. Mirrors pick_place.RESET_STATE, the same choice one layer down.
+RESET_STATE = 'init'
 
 # One wave is 3s of gesture, but the planned moves in and out are ordinary
 # collision-checked moves and are the slow part. Generous: this exists to stop a
@@ -429,6 +442,49 @@ class ArmService:
             self._task = None
             self._motion.release()
 
+    def _release_args(self, park=''):
+        """`move_to_state --open-gripper [STATE]`: the last thing the arm can
+        be told, because nothing drives a servo once the launch is down.
+
+        One process for the release and the park together -- a shutdown has two
+        `ros2 run` interpreter startups to spare only if it is not being timed,
+        and this one is. The jaws open BEFORE the move, so whatever is held
+        drops where it is rather than from the park pose: the same order, for
+        the same reason, as pick_place --reset.
+        """
+        args = ['ros2', 'run', 'dofbot_ctrl', 'move_to_state', '--',
+                '--open-gripper']
+        if park:
+            args.append(str(park))
+        return args
+
+    def _release_on_exit(self, timeout=RELEASE_TIMEOUT):
+        """Open the jaws on the way out. Returns a line for the log.
+
+        Deliberately NOT _run(): whatever held the motion lock was killed a
+        moment ago, and whether its thread has noticed yet is a race this
+        cannot afford to lose. Nothing else runs after this in any case -- the
+        launch goes down next -- so 'busy' is not an answer worth waiting for.
+        """
+        if not self._launch_alive():
+            return 'arm was not enabled; jaws left as they are'
+        try:
+            proc = subprocess.Popen(
+                self._runner.argv(self._release_args()),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+        except OSError as exc:
+            return 'could not open the jaws: %s' % exc
+        try:
+            output = proc.communicate(timeout=timeout)[0]
+        except subprocess.TimeoutExpired:
+            _kill_group(proc, grace=5.0)
+            return 'opening the jaws timed out after %.0fs' % timeout
+        if proc.returncode == 0:
+            return 'jaws opened'
+        return ('could not open the jaws: %s'
+                % (_failure_reason(output) or 'exit %d' % proc.returncode))
+
     def _require_enabled(self, command):
         """None when the stack is up, else the failure to hand back."""
         if self._launch_alive():
@@ -561,22 +617,37 @@ class ArmService:
                        seconds=time.time() - started)
 
     def disable_arm(self, park=''):
-        """Shut the pick_place stack down.
+        """Shut the pick_place stack down, opening the jaws on the way.
 
         Args:
             park: optionally move to this named state first (e.g. 'init'),
                   while the stack is still up to plan the move. Ignored if the
                   arm is not enabled; a failed park does not stop the shutdown.
 
-        The servos hold their last position after the nodes exit -- this cuts
-        control, not torque.
+        THE JAWS ARE ALWAYS OPENED, park or no park, and that DROPS whatever is
+        held where the arm is standing. The servos hold their last position
+        after the nodes exit -- this cuts control, not torque -- so a gripper
+        left closed stays clamped on the object, and on nothing but its own
+        stall current if the object works free. Neither is a state to walk away
+        from, and once the launch is down nothing can drive the servo to fix
+        it. A failed release does not stop the shutdown.
         """
-        parked = ''
-        if park and self._launch_alive():
-            result = self.move_to_state(park)
-            parked = ('parked at %r; ' % park if result['ok']
-                      else 'park at %r failed (%s); ' % (park, result['error']))
-        return _result(True, 'disable_arm', 0, parked + self._stop_launch())
+        park = str(park).strip()
+        released = ''
+        if self._launch_alive():
+            states = self.list_states()
+            if park and states and park not in states:
+                # An unknown park must not cost the release. move_to_state
+                # rejects a bad state on the command line before it opens
+                # anything, and letting go is the half that matters here.
+                released = 'unknown park state %r ignored; ' % park
+                park = ''
+            result = self._run('disable_arm', self._release_args(park),
+                               STATE_TIMEOUT)
+            what = 'let go and parked at %r' % park if park else 'let go'
+            released += ('%s; ' % what if result['ok']
+                         else '%s failed (%s); ' % (what, result['error']))
+        return _result(True, 'disable_arm', 0, released + self._stop_launch())
 
     def pick_can(self, x, y, z, object='', timeout=PICK_TIMEOUT):
         """Pick the object centred at (x, y, z) and carry it.
@@ -639,7 +710,7 @@ class ArmService:
         args = ['ros2', 'run', 'dofbot_ctrl', 'move_to_state', '--', name]
         return self._run('move_to_state', args, timeout)
 
-    def reset_arm(self, state='ready', force=False, timeout=RESET_TIMEOUT):
+    def reset_arm(self, state=RESET_STATE, force=False, timeout=RESET_TIMEOUT):
         """Recover from a run that died partway: clear the scene, let go, go home.
 
         Runs `ros2 run dofbot_ctrl pick_place -- --reset STATE`. This is the
@@ -655,12 +726,13 @@ class ArmService:
         from up there instead.
 
         Args:
-            state: where to leave the arm afterwards (default 'ready').
+            state: where to leave the arm afterwards. The default stays out
+                   of the OAK-D's view -- see RESET_STATE.
             force: if MoveIt will not plan out of where the arm is, drive out
                    blind -- joint interpolation, NOT COLLISION CHECKED. Watch
                    the arm and have the power switch to hand.
         """
-        state = str(state).strip() or 'ready'
+        state = str(state).strip() or RESET_STATE
         states = self.list_states()
         if states and state not in states:
             return _result(False, 'reset_arm',
@@ -860,6 +932,10 @@ class ArmService:
         task = self._task
         if task is not None:
             _kill_group(task['proc'], grace=5.0)
+        # Last chance to drive a servo. A SIGTERM in the middle of a pick would
+        # otherwise leave the stack down with the jaws still clamped shut on
+        # whatever the killed command was holding.
+        print(self._release_on_exit(), flush=True)
         print(self._stop_launch(), flush=True)
 
 

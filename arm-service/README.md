@@ -26,7 +26,7 @@ nothing here touches serial.
 | method | what it runs |
 |---|---|
 | `enable_arm()` | `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false` |
-| `disable_arm()` | stops that launch (whole process group) |
+| `disable_arm()` | opens the jaws, then stops that launch (whole process group) |
 | `pick_can(x, y, z)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z` |
 | `place_can()` | `ros2 run dofbot_ctrl pick_place -- --place` |
 | `move_to_state(name)` | `ros2 run dofbot_ctrl move_to_state -- NAME` |
@@ -207,6 +207,17 @@ anything that hard-codes the values above has to read `DOFBOT_GRIPPER` the way
   plan from where the arm is; the blind move it makes is not collision checked.
 - **`reset_arm()` drops what is held, where it is**, before the arm moves.
   Carrying it home first would only drop it from higher up.
+- **Shutdown lets go first.** `disable_arm()` opens the jaws before it stops
+  the launch, and so does a `systemctl stop` or any other SIGTERM. Stopping the
+  stack cuts control, not torque, so a gripper left closed stays clamped on
+  whatever it was holding — or on its own stall current once that works free —
+  and nothing can drive the servo to fix it afterwards. It drops what is held
+  where the arm is standing, deliberately, for the same reason `reset_arm()`
+  does.
+- **`reset_arm()` parks at `init`, folded low and forward** — not at `ready`.
+  A reset runs after a pick went wrong, and the next thing to look for the
+  object is the OAK-D on the chassis; parking with the arm up leaves it
+  standing in that camera's view. Pass a state to override it.
 - **`place_can()` drops at a named state, not at a coordinate.** `over_trash`
   is nominally straight in front of the robot and is a placeholder for a bin
   perception has yet to find; when it does, this grows the coordinates

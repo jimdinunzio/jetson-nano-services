@@ -17,9 +17,17 @@ Environment=ROS_DISTRO=humble
 # Environment=DOFBOT_ARM_PORT=8001
 # Environment=DOFBOT_LAUNCH_LOG=/tmp/dofbot_arm_launch.log
 
-# Graceful shutdown: the server needs long enough to bring the ROS launch down
-# (SIGINT, then SIGTERM, then SIGKILL per node) before systemd loses patience.
-TimeoutStopSec=45
+# Graceful shutdown: the server needs long enough to let go of whatever is in
+# the jaws AND bring the ROS launch down before systemd loses patience. Worst
+# case, from arm_server's own timeouts:
+#
+#   20s  kill the command in flight   (SIGINT 5 + SIGTERM 10 + SIGKILL 5)
+#   20s  open the jaws                (RELEASE_TIMEOUT)
+#   30s  stop the launch              (SIGINT 15 + SIGTERM 10 + SIGKILL 5)
+#
+# 45s did not cover the last two on their own -- a stop timed out and systemd
+# SIGKILLed the server mid-teardown, which is how move_group gets orphaned.
+TimeoutStopSec=120
 KillMode=mixed
 KillSignal=SIGTERM
 SendSIGKILL=yes
