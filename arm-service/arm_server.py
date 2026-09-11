@@ -112,6 +112,10 @@ WAVE_TIMEOUT = 180
 # say what went wrong on the last few lines and log banners on the first few.
 MAX_OUTPUT = 8000
 
+# `reason` is one line for a caller to read or relay, not a second copy of the
+# log -- a wrapped MoveIt error runs long, and the whole of it is in `output`.
+MAX_REASON = 500
+
 _server = None
 _service = None
 
@@ -123,6 +127,12 @@ _service = None
 _ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 _NOT_XML = re.compile(
     '[^\t\n\r\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]')
+
+# A node giving up writes `[ERROR] [stamp] [node]: text`, and `ros2 launch`
+# writes `[ERROR] [node-2]: text` about a process that died -- one bracketed
+# field or several, so take however many there are and keep what follows.
+_ROS_ERROR = re.compile(r'^\[(?:ERROR|FATAL)\]\s*(?:\[[^]]*\]\s*)*:?\s*(.*)$')
+_ROS_CHATTER = re.compile(r'^\[(?:INFO|WARN|DEBUG)\]')
 
 
 def _printable(text):
@@ -139,15 +149,69 @@ def _tail(text, limit=MAX_OUTPUT):
     return '...[%d bytes truncated]...\n' % (len(text) - limit) + text[-limit:]
 
 
+def _clip(text, limit=MAX_REASON):
+    """One long line, short enough to sit inside `error`."""
+    text = ' '.join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[:limit - 3] + '...'
+
+
+def _failure_reason(text):
+    """The one line of console output that says WHY a command failed.
+
+    `returncode` says a command failed and `output` says why, but `output` is
+    console text -- banners, progress, MoveIt chatter -- and the caller at the
+    other end of this server is a program, which cannot be asked to read it.
+    So the cause is lifted out of it and handed over as a sentence.
+
+    Two places it can be. Every exception dofbot_ctrl raises ends up logged by
+    the entry point on its way out, so the usual answer is the last ERROR line;
+    the LAST one, not the first, because MoveIt logs errors it then recovers
+    from and the fatal one is logged last. A failure that never reached a
+    logger -- a rejected command line, an import that blew up -- printed
+    something plain instead, and there the last line is the answer.
+
+    Empty when the output says nothing either way. An empty reason is honest;
+    a guess pulled from an INFO line is not, so info and warnings are skipped.
+    """
+    lines = _printable(text or '').splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        match = _ROS_ERROR.match(lines[i].strip())
+        if not match:
+            continue
+        # A logged message can wrap. The lines under it are its continuation
+        # until the next bracketed log line starts.
+        wrapped = []
+        for line in lines[i + 1:]:
+            if not line.strip() or line.lstrip().startswith('['):
+                break
+            wrapped.append(line.strip())
+        return _clip(' '.join([match.group(1).strip()] + wrapped))
+    for line in reversed(lines):
+        if line.strip() and not _ROS_CHATTER.match(line.strip()):
+            return _clip(line.strip())
+    return ''
+
+
 def _result(ok, command='', returncode=-1, output='', error='', seconds=0.0):
     """The shape every command returns. XML-RPC has no None worth sending, so
-    absent fields are empty strings rather than nil."""
+    absent fields are empty strings rather than nil.
+
+    `reason` is why it failed, read out of the output by _failure_reason, and
+    it is folded into `error` as well -- a caller that only ever looked at
+    `error` gets the cause without being changed to ask for it.
+    """
+    reason = '' if ok else _failure_reason(output)
+    if reason and reason not in error:
+        error = '%s: %s' % (error, reason) if error else reason
     return {
         'ok': bool(ok),
         'command': command,
         'returncode': int(returncode),
         'output': _tail(output),
         'error': error or '',
+        'reason': reason,
         'seconds': round(float(seconds), 2),
     }
 
@@ -699,7 +763,13 @@ class ArmService:
         if object:
             args += ['--object', str(object)]
         result = self._run('is_holding', args, timeout)
-        return dict(result, **_verdict(result['output']))
+        look = _verdict(result['output'])
+        # Both halves call their explanation `reason`. When the look happened
+        # the camera's is the one the caller asked for; when the command failed
+        # there was no look to explain, so the failure keeps the field.
+        if not result['ok']:
+            look.pop('reason')
+        return dict(result, **look)
 
     def list_states(self):
         """The saved state names, read from the node itself and cached.
@@ -772,7 +842,7 @@ class ArmService:
         if self._last is not None:
             status['last'] = {k: self._last[k]
                               for k in ('command', 'ok', 'returncode',
-                                        'error', 'seconds')}
+                                        'error', 'reason', 'seconds')}
         return status
 
     def ping(self):
@@ -819,22 +889,6 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 
-METHOD_HELP = [
-    ('enable_arm(timeout, bridge, rviz, port)', 'Start the pick_place stack'),
-    ('disable_arm(park)', 'Stop the stack, optionally parking first'),
-    ('pick_can(x, y, z, object)', 'Pick the object at x,y,z and carry it'),
-    ('place_can()', 'Place what the gripper is carrying'),
-    ('move_to_state(name)', 'Move to a saved state (ready, init, carry, ...)'),
-    ('reset_arm(state, force)', 'Clear the scene, let go, go home'),
-    ('wave_arm(waves, finish, seconds)', 'Wave hello, then stow'),
-    ('list_states()', 'Names move_to_state accepts'),
-    ('stop()', 'Abort the motion in flight; leave the stack up'),
-    ('tail_log(lines)', "Tail the launch's output"),
-    ('get_status()', 'Enabled? busy? what ran last?'),
-    ('ping()', 'Check server responsiveness'),
-]
-
-
 def main():
     global _server, _service
 
@@ -860,19 +914,16 @@ def main():
     _server.register_instance(_service)
     _server.register_introspection_functions()
 
-    print('DOFBOT Arm XML-RPC Server', flush=True)
-    print('Listening on %s:%d' % (cli.host, cli.port), flush=True)
-    print('PID: %d' % os.getpid(), flush=True)
-    print('Workspace: %s (ROS %s, %s)'
+    # Startup says where the server is and what it is driving, and stops
+    # there. The method list that used to print here was fifteen lines of
+    # unchanging text in the journal on every restart -- the README and this
+    # file's docstring are where to read it, and neither scrolls a log away.
+    print('DOFBOT Arm XML-RPC Server on %s:%d, pid %d'
+          % (cli.host, cli.port, os.getpid()), flush=True)
+    print('Workspace: %s (ROS %s, %s); launch log: %s'
           % (runner.workspace, runner.distro,
-             'sourced' if runner.sourced() else 'sourcing per command'),
-          flush=True)
-    print('Launch log: %s' % cli.launch_log, flush=True)
-    print(flush=True)
-    print('Available methods:', flush=True)
-    for name, blurb in METHOD_HELP:
-        print('  - %-42s - %s' % (name, blurb), flush=True)
-    print(flush=True)
+             'sourced' if runner.sourced() else 'sourcing per command',
+             cli.launch_log), flush=True)
     print('Server ready. SIGTERM/SIGINT stop the arm stack before exiting.',
           flush=True)
 

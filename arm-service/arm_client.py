@@ -66,16 +66,17 @@ def _failed(command: str, error: str) -> Dict[str, Any]:
     """A server-shaped result for something that never reached the server, so
     callers only ever have one dict shape to handle."""
     return {'ok': False, 'command': command, 'returncode': -1, 'output': '',
-            'error': error, 'seconds': 0.0}
+            'error': error, 'reason': error, 'seconds': 0.0}
 
 
 class ArmClient:
     """Client for the DOFBOT arm server.
 
     Every motion method returns the server's result dict:
-        {'ok', 'command', 'returncode', 'output', 'error', 'seconds'}
-    `ok` is the only field worth branching on; `output` is the ros2 command's
-    console output, which is where a MoveIt failure explains itself.
+        {'ok', 'command', 'returncode', 'output', 'error', 'reason', 'seconds'}
+    `ok` is the only field worth branching on; `reason` is the one line that
+    says why a failure failed, and `output` is the whole of the ros2 command's
+    console output, which is where a MoveIt failure explains itself at length.
     """
 
     def __init__(self, server_url: str = DEFAULT_SERVER_URL,

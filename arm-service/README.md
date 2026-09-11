@@ -41,11 +41,24 @@ Every command returns the same dict:
 ```python
 {'ok': bool, 'command': str, 'returncode': int,
  'output': str,      # the ros2 command's console output
- 'error': str, 'seconds': float}
+ 'error': str,       # what went wrong, ending in `reason`
+ 'reason': str,      # the one line saying why, lifted out of `output`
+ 'seconds': float}
 ```
 
 `output` is the tail of what the node printed, which is where a MoveIt failure
-explains itself — hand it to a human, don't parse it.
+explains itself — hand it to a human, don't parse it. `reason` is that
+explanation reduced to a sentence for a caller that is a program: the last
+`[ERROR]` the node logged, or, when it died before reaching a logger, the last
+thing it printed. It is empty on success and can be empty on a failure that
+printed nothing to go on.
+
+```python
+{'ok': False, 'returncode': 1,
+ 'error': "pick_can exited 1: unknown object 'soda can'; catalogue has "
+          "['soda_can', 'test_block']",
+ 'reason': "unknown object 'soda can'; catalogue has ['soda_can', 'test_block']"}
+```
 
 `is_holding()` adds three keys to that dict: `held` (**True / False / None**),
 `verdict` (the same three as text) and `reason`.
@@ -75,6 +88,19 @@ sudo rm /etc/systemd/system/arm.service && sudo systemctl daemon-reload
 `start_arm_server.sh` runs the system `python3` with ROS sourced, not a venv.
 There is nothing to pip-install: the server is stdlib only and everything it
 drives is a `ros2` command.
+
+## Logs
+
+Three places, none of them the colcon build logs:
+
+| | |
+|---|---|
+| `journalctl -u dofbot-arm -f` | the server: every command it ran and how each ended |
+| `/tmp/dofbot_arm_launch.log` | the launch — move_group and the bridge. `tail_log()` serves it |
+| `~/.ros/log/` | one file per node run, `<node>_<pid>_<stamp>.log`, written by ROS itself |
+
+A one-shot command like `pick_place` leaves its own file in `~/.ros/log/`, so
+the error behind a failed pick is on disk there as well as in `reason`.
 
 ## Using it
 
