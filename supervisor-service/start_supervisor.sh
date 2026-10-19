@@ -37,7 +37,10 @@ echo "$(date): Python: $VENV_PYTHON" | tee -a "$LOG_FILE"
 cd "$SCRIPT_DIR"
 
 # Run in the background so the trap can forward SIGTERM for graceful shutdown.
-"$VENV_PYTHON" service_supervisor.py 2>&1 | tee -a "$LOG_FILE" &
+# Tee through a process substitution, not a pipe: with `python | tee &`, $!
+# is tee's PID, so the trap signalled tee, python never heard, and systemd
+# SIGKILLed it at TimeoutStopSec.
+"$VENV_PYTHON" service_supervisor.py > >(tee -a "$LOG_FILE") 2>&1 &
 SUP_PID=$!
 
 wait "$SUP_PID"

@@ -21,13 +21,16 @@ Environment=ROS_DISTRO=humble
 # the jaws AND bring the ROS launch down before systemd loses patience. Worst
 # case, from arm_server's own timeouts:
 #
-#   20s  kill the command in flight   (SIGINT 5 + SIGTERM 10 + SIGKILL 5)
-#   20s  open the jaws                (RELEASE_TIMEOUT)
-#   30s  stop the launch              (SIGINT 15 + SIGTERM 10 + SIGKILL 5)
+#   11s  kill the command in flight   (SIGINT 3 + SIGTERM 5 + SIGKILL 3)
+#    8s  open the jaws                (RELEASE_TIMEOUT)
+#   16s  stop the launch              (SIGINT 8 + SIGTERM 5 + SIGKILL 3)
+#   ---
+#   35s  worst case, inside the limit below
 #
-# 45s did not cover the last two on their own -- a stop timed out and systemd
-# SIGKILLed the server mid-teardown, which is how move_group gets orphaned.
-TimeoutStopSec=120
+# Those numbers are sized TO this limit, not the other way round. Raising any of
+# them without raising this means systemd SIGKILLs the server mid-teardown,
+# which is how move_group gets orphaned and how the jaws stay shut on a can.
+TimeoutStopSec=45
 KillMode=mixed
 KillSignal=SIGTERM
 SendSIGKILL=yes

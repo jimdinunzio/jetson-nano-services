@@ -106,8 +106,9 @@ VERDICT_PREFIX = 'VERDICT: '
 # Seconds allowed for the jaws-open on the way out. Shorter than STATE_TIMEOUT
 # deliberately: systemd is timing that shutdown (TimeoutStopSec in the unit
 # file), and a gripper that has not answered in this long is not going to
-# before the launch has to come down anyway.
-RELEASE_TIMEOUT = 20
+# before the launch has to come down anyway. A release that actually works is
+# one `ros2 run` startup plus one servo command -- a few seconds.
+RELEASE_TIMEOUT = 8
 
 # Where reset_arm() leaves the arm unless told otherwise. 'init' is folded low
 # and forward: a reset runs after a pick went wrong, and the next thing to look
@@ -277,7 +278,7 @@ def _group_empty(pgid):
     return False
 
 
-def _kill_group(proc, first=signal.SIGINT, grace=15.0):
+def _kill_group(proc, first=signal.SIGINT, grace=8.0):
     """Signal a child's whole process group and wait for the group to empty.
 
     ros2 launch fans out into move_group, ros2_control_node, the spawners and
@@ -298,8 +299,13 @@ def _kill_group(proc, first=signal.SIGINT, grace=15.0):
     except OSError:
         pgid = None
 
-    for sig, wait in ((first, grace), (signal.SIGTERM, 10.0),
-                      (signal.SIGKILL, 5.0)):
+    # The escalation tail is short on purpose. systemd is timing the whole
+    # teardown (TimeoutStopSec in the unit) and this runs twice per shutdown --
+    # once for the command in flight, once for the launch -- so a long ladder
+    # here is most of the budget. Anything still alive after SIGINT and SIGTERM
+    # is not going to exit tidily given a few more seconds.
+    for sig, wait in ((first, grace), (signal.SIGTERM, 5.0),
+                      (signal.SIGKILL, 3.0)):
         try:
             if pgid is None:
                 proc.send_signal(sig)
@@ -931,7 +937,7 @@ class ArmService:
         self._closed = True
         task = self._task
         if task is not None:
-            _kill_group(task['proc'], grace=5.0)
+            _kill_group(task['proc'], grace=3.0)
         # Last chance to drive a servo. A SIGTERM in the middle of a pick would
         # otherwise leave the stack down with the jaws still clamped shut on
         # whatever the killed command was holding.

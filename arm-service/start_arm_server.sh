@@ -55,7 +55,10 @@ trap cleanup SIGTERM SIGINT SIGHUP
 cd "$SCRIPT_DIR"
 
 # Backgrounded so the trap above can run while the server is up.
-python3 -u arm_server.py --port "$PORT" --workspace "$WORKSPACE" 2>&1 | tee -a "$LOG_FILE" &
+# Tee through a process substitution, not a pipe: with `python | tee &`, $!
+# is tee's PID, so the trap signalled tee, python never heard, and systemd
+# SIGKILLed it at TimeoutStopSec.
+python3 -u arm_server.py --port "$PORT" --workspace "$WORKSPACE" > >(tee -a "$LOG_FILE") 2>&1 &
 SERVER_PID=$!
 
 wait "$SERVER_PID"
