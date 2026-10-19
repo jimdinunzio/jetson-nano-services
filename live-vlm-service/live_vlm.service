@@ -7,15 +7,17 @@ Requires=docker.service
 [Service]
 Type=simple
 ExecStart=/home/jim/Documents/git/jetson-nano-services/live-vlm-service/start_live_vlm_server.sh
-ExecStop=/usr/bin/docker stop -t 10 live_vlm_server
+ExecStop=/bin/sh -c '/usr/bin/docker kill --signal=SIGINT live_vlm_server >/dev/null 2>&1 && timeout 2 /usr/bin/docker wait live_vlm_server >/dev/null 2>&1; /usr/bin/docker kill live_vlm_server >/dev/null 2>&1; exit 0'
 Restart=no
 User=jim
 Environment=HOME=/home/jim
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Timeout settings for graceful shutdown
-# Give SIGTERM 30 seconds, then send SIGKILL
-TimeoutStopSec=30
+# Stopping is deliberately abrupt: ExecStop above interrupts the container the
+# way Ctrl-C would, waits up to 2s for it to exit, then kills it. `docker stop`
+# spent a grace period per call and a GPU switch cannot afford it. This timeout
+# only has to outlast that.
+TimeoutStopSec=15
 KillMode=mixed
 KillSignal=SIGTERM
 SendSIGKILL=yes

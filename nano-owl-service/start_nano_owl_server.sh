@@ -1,43 +1,41 @@
 #!/bin/bash
 #
 # NanoOWL Server Startup Script
-# Monitors for CUDA/memory errors and reboots if detected
+#
+# Watches the log for CUDA/memory errors and stops the container when one
+# appears. IT DOES NOT REBOOT: the supervisor scans this log, reports the
+# failure and leaves the box up for a person. See service_supervisor.py.
+#
+# Stopping is abrupt on purpose -- SIGINT, the signal Ctrl-C sends, then SIGKILL
+# if it has not exited within 2s. `docker stop` spends a grace period per call,
+# and a switch that is already stopping one model to load another has no
+# seconds to spend being polite.
 #
 
 LOG_FILE="/tmp/nano_owl_server.log"
 CONTAINER_NAME="nano_owl_server"
-REBOOT_FLAG="/tmp/nano_owl_needs_reboot"
 # A GPU/host allocation failure reaches the log as a cuDNN/cuBLAS init or
 # "CUDA error" line: the driver reports the handle it could not create, not the
 # ENOMEM underneath. NvMapMemAllocInternalTagged "error 12" lines are not
 # listed -- they also appear on healthy loads and mid-run, so they are noise.
 ERROR_PATTERNS="CUDA out of memory|CUDA: out of memory|OutOfMemoryError|NVML_SUCCESS.*INTERNAL ASSERT FAILED|RuntimeError.*CUDACachingAllocator|cuda runtime error|CUDA error|cuDNN error|CUDNN_STATUS_INTERNAL_ERROR|CUDNN_STATUS_NOT_INITIALIZED|CUDNN_STATUS_ALLOC_FAILED|CUBLAS_STATUS_ALLOC_FAILED|CUBLAS_STATUS_NOT_INITIALIZED"
 
-# Remove any stale reboot flag
-rm -f "$REBOOT_FLAG"
-
-# Function to trigger immediate reboot
-trigger_reboot() {
-    echo "$(date): Triggering immediate system reboot..." | tee -a "$LOG_FILE"
-    # Use nohup and disown to ensure reboot happens even if script is killed
-    nohup sudo reboot &>/dev/null &
-    disown
-    exit 1
+# Interrupt the container, give it up to 2s to exit, then kill it. `docker wait`
+# returns the moment it exits, and the SIGINT fails at once when there is no
+# container -- so neither a clean exit nor a fresh start pays the 2s.
+stop_container() {
+    if docker kill --signal=SIGINT "$CONTAINER_NAME" >/dev/null 2>&1; then
+        timeout 2 docker wait "$CONTAINER_NAME" >/dev/null 2>&1
+        docker kill "$CONTAINER_NAME" >/dev/null 2>&1
+    fi
+    return 0
 }
 
 # Cleanup function to stop the container
 cleanup() {
     echo "$(date): Received shutdown signal, stopping container..." | tee -a "$LOG_FILE"
 
-    # Check if we need to reboot due to CUDA error
-    if [ -f "$REBOOT_FLAG" ]; then
-        echo "$(date): Reboot flag detected, initiating reboot..." | tee -a "$LOG_FILE"
-        rm -f "$REBOOT_FLAG"
-        trigger_reboot
-    fi
-
-    # Stop the Docker container
-    docker stop -t 10 "$CONTAINER_NAME" 2>/dev/null || true
+    stop_container
 
     # Kill the monitor process if running
     if [ -n "$MONITOR_PID" ]; then
@@ -52,7 +50,7 @@ cleanup() {
 trap cleanup SIGTERM SIGINT SIGHUP
 
 # Stop any existing container with this name
-docker stop "$CONTAINER_NAME" 2>/dev/null || true
+stop_container
 docker rm "$CONTAINER_NAME" 2>/dev/null || true
 
 echo "$(date): Starting NanoOWL Server..." | tee -a "$LOG_FILE"
@@ -64,15 +62,14 @@ echo "$(date): Starting NanoOWL Server..." | tee -a "$LOG_FILE"
     sleep 5  # Wait for log to start populating
     tail -f "$LOG_FILE" 2>/dev/null | while read line; do
         if echo "$line" | grep -qE "$ERROR_PATTERNS"; then
-            # The supervisor (service_supervisor.py) owns reboot decisions now,
-            # so we only log the error and stop the container. The supervisor
-            # scans this log, sees the error, and reports needs_reboot to the
-            # remote host instead of rebooting the box mid-switch.
+            # Nothing here reboots. We log the error and stop the
+            # container; the supervisor scans this log, sees the error and
+            # reports needs_reboot to the remote host, leaving the board up.
             echo "$(date): CUDA/Memory error detected! Stopping container..." | tee -a "$LOG_FILE"
             echo "$(date): Error line: $line" | tee -a "$LOG_FILE"
 
             # Stop the container to trigger exit.
-            docker stop -t 5 "$CONTAINER_NAME" 2>/dev/null || true
+            stop_container
             exit 0
         fi
     done
@@ -98,8 +95,8 @@ echo "$(date): Container exited with code $EXIT_CODE" | tee -a "$LOG_FILE"
 # Clean up the container
 docker rm "$CONTAINER_NAME" 2>/dev/null || true
 
-# Reboot decisions are owned by the supervisor (service_supervisor.py), which
-# scans this log for the error patterns and reports needs_reboot to the remote
-# host. This script no longer reboots on its own.
+# Nothing here reboots. The supervisor scans this log for the error patterns and
+# reports needs_reboot to the remote host; restarting the board is a person's
+# call, taken knowing whether the robot is on wall power or battery.
 
 exit $EXIT_CODE

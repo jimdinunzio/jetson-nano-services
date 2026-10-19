@@ -25,13 +25,19 @@ Key behavior:
     then OOM'd during model load.
   - The model is loaded exactly ONCE per switch (like the old start scripts).
     It is NOT retried in place: repeated back-to-back model loads stack current
-    spikes and brown out the 25W Jetson rail, latching the board OFF. Instead,
-    if the load fails, the supervisor REBOOTS the Jetson (phase 'rebooting').
-    A reboot clears GPU/memory state, and boot-restore then brings the
-    last-requested service back up -- one load per boot, so spikes never stack.
+    spikes and brown out the 25W Jetson rail, latching the board OFF.
+  - THE SUPERVISOR NEVER REBOOTS THE BOARD. A failed load ends at phase
+    'needs_reboot' with the box still up and the reason reported; rebooting is
+    a person's decision, taken with the robot's power source in mind. Only the
+    reboot() RPC reboots, and only because someone asked it to.
+  - A load that has not reached its marker in time ends at phase 'timeout' and
+    the unit is LEFT RUNNING, because a timeout means "not seen yet", not
+    "failed" -- the marker has twice arrived seconds after the old code gave up.
+    get_status() keeps scanning the log, and moves the phase on to 'up' or
+    'needs_reboot' once the load finishes either way.
   - If callback_url is given, the supervisor pushes progress events
-    (attempt / up / rebooting) to that URL's switch_progress(event) XML-RPC
-    method. Callbacks are best-effort and never block the switch.
+    (attempt / up / timeout / needs_reboot) to that URL's switch_progress(event)
+    XML-RPC method. Callbacks are best-effort and never block the switch.
   - The requested service is persisted to a state file and restored on boot.
 
 The arm service (port 8001) is independent and is NOT managed here.
@@ -74,10 +80,15 @@ APP_PORT = 8000
 # Load-failure policy: a model load is the single biggest power-draw event on
 # the board. Do NOT retry a failed load in-place -- repeated back-to-back loads
 # stack current spikes and brown out the 25W Jetson rail, latching the board
-# OFF (a power-down, not a reboot). Instead, load exactly ONCE (like the old
-# start scripts) and, if it fails, REBOOT. A reboot fully clears GPU/memory
-# state, and there is only ever one load per boot, so spikes never stack. After
-# the reboot, boot-restore brings the last-requested service back up.
+# OFF (a power-down, not a reboot). So: load exactly ONCE, and if it fails,
+# STOP AND SAY SO.
+#
+# NOTHING HERE REBOOTS THE BOARD BY ITSELF, and that is a hard rule. It used to:
+# a failed load rebooted, boot-restore brought the same service back, and it
+# failed the same way. Worse, an automatic reboot does not reliably return --
+# 2026-09-10 22:01:57 ordered one and the board stayed dark for 18 hours until
+# wall power was reconnected by hand. A robot that strands itself in the field
+# is a far worse outcome than a service that is down and says it is down.
 GPU_SETTLE = 8.0  # after stopping the other unit, before starting the target
 
 # Persisted "what the host last asked for", restored on boot.
@@ -104,11 +115,27 @@ ERROR_PATTERNS = re.compile(
     r"|CUBLAS_STATUS_NOT_INITIALIZED"
 )
 
-# How long to wait for a unit to stop (covers TimeoutStopSec=30 + docker -t 10).
-STOP_TIMEOUT = 45.0
-# How long to wait for the READY MARKER on a single start attempt. Model load
-# (especially VLM) can be slow, so this is generous.
-START_TIMEOUT = 240.0
+# How long to wait for a unit to stop. The units now SIGINT the container and
+# then kill it rather than asking docker to stop it politely, so a stop is a
+# couple of seconds; this only has to outlast a container that ignores both.
+STOP_TIMEOUT = 10.0
+
+# How long to wait for the READY MARKER, per service. NOT one number: OWL and
+# VLM load different models and the gap between them is most of a minute.
+#
+# 240s was one global and it was a hair short for OWL, which is how the reboot
+# loop started. Twice the marker landed just past the deadline and a healthy
+# load was declared failed:
+#
+#     2026-09-10 22:01:57  gave up      22:01:58  [NanoOwl] Predictor loaded.
+#     2026-09-11 16:41:50  gave up      16:41:54  [NanoOwl] Predictor loaded.
+#
+# So OWL's real load is AT LEAST 240s and these are lower bounds, not the
+# measurement -- the load was never allowed to finish and be timed. Until it
+# is, leave generous headroom. Nothing is lost by waiting: a slow load that
+# succeeds costs seconds, and calling it failed costs a service that is down.
+START_TIMEOUT = {"owl": 420.0, "vlm": 240.0}
+DEFAULT_START_TIMEOUT = 240.0
 
 # Global references for the signal handler.
 _server = None
@@ -121,10 +148,10 @@ def signal_handler(signum, frame):
     sig_name = signal.Signals(signum).name
     print(f"\nReceived {sig_name}. Shutting down supervisor...", flush=True)
     if _server is not None:
-        t = threading.Thread(target=_server.shutdown)
-        t.start()
-        t.join(timeout=5.0)
-    print("Supervisor stopped.", flush=True)
+        # shutdown() blocks until serve_forever returns, and serve_forever is
+        # this very thread -- so ask from another one and do not join it, or
+        # every stop waits out the join.
+        threading.Thread(target=_server.shutdown).start()
     sys.exit(0)
 
 
@@ -300,32 +327,79 @@ class SupervisorService:
                     ok = False
         return ok
 
+    def _check_load(self, name, unit, offset):
+        """One look at a load in progress. Returns ('ready' | 'cuda_oom' |
+        'start_failed', detail), or (None, None) while it is still loading."""
+        error_hit, ready_hit = self._scan_log(name, offset)
+        if error_hit:
+            return "cuda_oom", error_hit
+        if ready_hit:
+            return "ready", ready_hit
+
+        state = self._is_active(unit)
+        if state in ("failed", "inactive"):
+            # Unit exited before the marker; re-scan for a cause.
+            error_hit, _ = self._scan_log(name, offset)
+            if error_hit:
+                return "cuda_oom", error_hit
+            return "start_failed", f"{unit} entered state '{state}' before ready"
+        return None, None
+
     def _wait_ready(self, name, unit, offset, cancel):
         """Wait for the READY MARKER for this start. Returns one of:
         'ready' | 'cuda_oom' | 'start_failed' | 'timeout' | 'cancelled',
         plus a detail string."""
-        deadline = time.time() + START_TIMEOUT
+        limit = START_TIMEOUT.get(name, DEFAULT_START_TIMEOUT)
+        deadline = time.time() + limit
         while time.time() < deadline:
             if cancel.is_set():
                 return "cancelled", "preempted by a newer switch"
 
-            error_hit, ready_hit = self._scan_log(name, offset)
-            if error_hit:
-                return "cuda_oom", error_hit
-            if ready_hit:
-                return "ready", ready_hit
-
-            state = self._is_active(unit)
-            if state in ("failed", "inactive"):
-                # Unit exited before the marker; re-scan for a cause.
-                error_hit, _ = self._scan_log(name, offset)
-                if error_hit:
-                    return "cuda_oom", error_hit
-                return "start_failed", f"{unit} entered state '{state}' before ready"
+            outcome, detail = self._check_load(name, unit, offset)
+            if outcome:
+                return outcome, detail
 
             time.sleep(1.5)
 
-        return "timeout", f"{unit}: ready marker not seen within {START_TIMEOUT:.0f}s"
+        # One more look before giving up. The loop sleeps 1.5s between scans and
+        # exits on the deadline, so without this the last sleep's worth of log is
+        # never read at all -- a marker that lands in it is missed and a service
+        # that loaded fine is reported failed.
+        outcome, detail = self._check_load(name, unit, offset)
+        if outcome:
+            return outcome, detail
+
+        return "timeout", f"{unit}: ready marker not seen within {limit:.0f}s"
+
+    def _recheck_timeout(self):
+        """Settle a switch left at phase 'timeout' if its load has since
+        finished. The unit was left running, so the marker (or a CUDA error)
+        can land after the deadline; get_status() calls this so the phase
+        catches up instead of saying 'timeout' forever."""
+        with self._lock:
+            sw = dict(self._switch)
+        if sw.get("phase") != "timeout":
+            return
+        name = sw["desired"]
+        outcome, detail = self._check_load(name, GPU_SERVICES[name],
+                                           sw["log_offset"])
+        if outcome is None:
+            return
+
+        with self._lock:
+            # A newer switch_to() may have replaced this one while we scanned.
+            if self._switch.get("updated") != sw["updated"]:
+                return
+        unit = GPU_SERVICES[name]
+        if outcome == "ready":
+            print(f"{unit} came up after its timeout.", flush=True)
+            self._set_state(phase="up", error=None, detail=detail,
+                            needs_reboot=False)
+        else:
+            print(f"{unit} failed after its timeout: {outcome} - {detail}. "
+                  f"NOT rebooting.", flush=True)
+            self._set_state(is_error=True, phase="needs_reboot", error=outcome,
+                            detail=detail, needs_reboot=True)
 
     def _sleep_cancellable(self, seconds, cancel):
         """Sleep up to `seconds`, waking early if a newer switch preempts us.
@@ -338,8 +412,8 @@ class SupervisorService:
         return cancel.is_set()
 
     def _run_switch(self, name, callback_url, cancel):
-        """Background worker: bring up `name` with one load attempt, rebooting
-        on failure, emitting events."""
+        """Background worker: bring up `name` with one load attempt, reporting
+        the outcome and emitting events. Never reboots."""
         try:
             if name == "none":
                 self._stop_others(None, cancel)
@@ -389,16 +463,33 @@ class SupervisorService:
                 print(f"{unit} is UP.", flush=True)
                 return
 
-            # Load failed. Policy: do NOT retry in-place (stacked load spikes
-            # brown out the board). Reboot instead -- it clears GPU/memory state
-            # and boot-restore will bring this service back up on the next boot.
-            print(f"{unit} failed to load: {outcome} - {detail}. Rebooting.",
-                  flush=True)
-            self._set_state(is_error=True, phase="rebooting", error=outcome,
+            # The load did not reach its marker. Do NOT retry in-place (stacked
+            # load spikes brown out the board) and do NOT reboot -- see the
+            # load-failure policy at the top of this file. Stop here and report.
+            #
+            # A TIMEOUT IS NOT A FAILURE. It means the marker was not seen yet,
+            # and the load may well still be running: twice the marker arrived
+            # seconds after the old code gave up and rebooted a healthy service.
+            # So a timeout leaves the unit alone -- it may still come up, and
+            # get_status() re-scans from log_offset and moves the phase on once
+            # it does -- while a confirmed CUDA error is a real failure that the
+            # board will not recover from on its own.
+            if outcome == "timeout":
+                print(f"{unit}: {detail}. Leaving it running -- it may still "
+                      f"come up; poll get_status().", flush=True)
+                self._set_state(is_error=True, phase="timeout", error=outcome,
+                                detail=detail, needs_reboot=False,
+                                log_offset=offset)
+                self._emit(callback_url, {"event": "timeout", "service": name,
+                                          "error": outcome, "detail": detail})
+                return
+
+            print(f"{unit} failed to load: {outcome} - {detail}. NOT rebooting; "
+                  f"reboot by hand once you have looked.", flush=True)
+            self._set_state(is_error=True, phase="needs_reboot", error=outcome,
                             detail=detail, needs_reboot=True)
-            self._emit(callback_url, {"event": "rebooting", "service": name,
+            self._emit(callback_url, {"event": "needs_reboot", "service": name,
                                       "error": outcome, "detail": detail})
-            self._reboot_now()
         except Exception as e:
             self._set_state(is_error=True, phase="failed", error="exception",
                             detail=str(e), needs_reboot=False)
@@ -414,11 +505,14 @@ class SupervisorService:
         Returns immediately: {accepted: True, desired: name}
         or {accepted: False, error: 'invalid'} for a bad name.
 
-        The switch loads the model ONCE. If it fails to load, the supervisor
-        REBOOTS the Jetson (phase 'rebooting') rather than retrying; after the
-        reboot, boot-restore brings this service back up. Poll get_status() for
-        progress/outcome, or pass callback_url (an XML-RPC endpoint exposing
-        switch_progress(event)) to be pushed events.
+        The switch loads the model ONCE and never retries it in place. It also
+        never reboots the board: a CUDA failure ends at phase 'needs_reboot'
+        with the box still up, for a person to look at and restart. A load that
+        simply has not finished ends at phase 'timeout' with the unit LEFT
+        RUNNING, because it may still come up.
+
+        Poll get_status() for progress/outcome, or pass callback_url (an
+        XML-RPC endpoint exposing switch_progress(event)) to be pushed events.
         """
         if name not in GPU_SERVICES and name != "none":
             return {"accepted": False, "error": "invalid",
@@ -459,6 +553,7 @@ class SupervisorService:
 
     def get_status(self):
         """Snapshot of the supervisor, the in-progress/last switch, and units."""
+        self._recheck_timeout()
         with self._lock:
             sw = dict(self._switch)
             last_error = self._last_error
@@ -480,7 +575,9 @@ class SupervisorService:
         return "pong"
 
     def _reboot_now(self):
-        """Reboot the Jetson. Used by the load-failure path and the reboot() RPC.
+        """Reboot the Jetson. Reached ONLY from the reboot() RPC -- a person
+        asking for it. No automatic path calls this; see the load-failure
+        policy at the top of the file.
         Runs `sudo reboot` in a daemon thread so callers/RPC replies aren't
         blocked by the shutdown sequence."""
         print("Rebooting the Jetson...", flush=True)
@@ -492,11 +589,20 @@ class SupervisorService:
         threading.Thread(target=do_reboot, daemon=True).start()
 
     def reboot(self):
-        """Reboot the Jetson on demand (also happens automatically on a failed
-        model load)."""
+        """Reboot the Jetson on demand.
+
+        CHECK WHAT THE ROBOT IS RUNNING ON FIRST. A reboot has been seen not to
+        come back: 2026-09-10 the board went dark and stayed dark for 18 hours
+        until wall power was reconnected. On wall power a reboot behaves; on
+        battery it may end the session until someone walks over to it.
+
+        Nothing calls this automatically -- that is the whole point of it being
+        an RPC.
+        """
         print("Reboot requested via XML-RPC.", flush=True)
         self._reboot_now()
-        return "Reboot initiated. System will restart shortly."
+        return ("Reboot initiated. If this board is on battery it may not come "
+                "back without wall power.")
 
 
 def _restore_on_boot(service):

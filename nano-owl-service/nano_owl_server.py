@@ -165,7 +165,13 @@ class NanoOwlService:
             return self.instance.push_frame(frame_data.data, int(seq))
 
     def reboot(self):
-        """Reboot the Jetson system."""
+        """Reboot the Jetson system.
+
+        CHECK WHAT THE ROBOT IS RUNNING ON FIRST. A reboot has been seen not to
+        come back: 2026-09-10 the board went dark and stayed dark for 18 hours
+        until wall power was reconnected by hand. On wall power it behaves; on
+        battery it may end the session until someone walks over to it.
+        """
         print("Reboot requested via XML-RPC. Initiating system reboot...", flush=True)
 
         def do_reboot():

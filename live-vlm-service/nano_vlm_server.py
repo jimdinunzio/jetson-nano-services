@@ -225,10 +225,12 @@ class NanoVlmService:
     def reboot(self):
         """
         Reboot the Jetson system.
-        
-        This will trigger a system reboot. The server will stop and
-        the system will restart.
-        
+
+        CHECK WHAT THE ROBOT IS RUNNING ON FIRST. A reboot has been seen not to
+        come back: 2026-09-10 the board went dark and stayed dark for 18 hours
+        until wall power was reconnected by hand. On wall power it behaves; on
+        battery it may end the session until someone walks over to it.
+
         Returns:
             String message (though the system will reboot before this returns)
         """

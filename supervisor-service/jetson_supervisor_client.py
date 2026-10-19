@@ -8,15 +8,20 @@ NanoOWL and Live-VLM (only one can run at a time; both serve on port 8000).
 Switching is ASYNCHRONOUS. switch_to() returns immediately ({accepted: True});
 the supervisor then stops the other service, starts the requested one, and waits
 for its READY MARKER in the log before declaring it "up". The model is loaded
-ONCE -- if it fails to load, the supervisor REBOOTS the Jetson automatically
-(it does not retry, because repeated back-to-back loads brown out the board).
-After the reboot, boot-restore brings the last-requested service back up. Learn
-the outcome one of two ways:
+ONCE and never retried, because repeated back-to-back loads brown out the board.
 
-  1. Poll get_status() until phase is "up" (or the box reboots on failure; the
-     connection drops and comes back with the service loading again).
+THE SUPERVISOR NEVER REBOOTS THE JETSON. A load that fails on a CUDA error ends
+at phase "needs_reboot" with the box still up and the reason in `detail`; you
+decide whether to reboot, knowing whether the robot is on wall power or battery.
+A load that merely has not finished in time ends at phase "timeout" with the
+unit LEFT RUNNING -- it may still come up, and get_status() moves the phase on
+to "up" or "needs_reboot" once it does.
+
+Learn the outcome one of two ways:
+
+  1. Poll get_status() until phase is terminal (see SETTLED_PHASES).
   2. Register a callback: run a CallbackServer on this host and pass its URL to
-     switch_to(); the supervisor pushes attempt/up/rebooting events to it.
+     switch_to(); the supervisor pushes attempt/up/timeout/needs_reboot events.
 
 Because model load is memory-heavy on the Jetson, you can fire switch_to() and
 then DISCONNECT/quit this client to free memory, reconnecting later to poll
@@ -40,9 +45,13 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 DEFAULT_SERVER_URL = "http://192.168.55.1:8002/"
 
 # Terminal phases: the switch has settled and no more progress will happen.
-# "rebooting" is terminal too -- the box is going down and will come back up
-# loading the last-requested service.
-SETTLED_PHASES = ("up", "failed", "idle", "cancelled", "rebooting")
+#
+# "needs_reboot" and "timeout" are terminal in the sense that the supervisor has
+# stopped working on the switch -- NOT that the box is fixed. After "timeout"
+# the unit is still running and may yet come up; poll get_status() again later
+# and the phase will have moved on to "up" or "needs_reboot" if it has.
+SETTLED_PHASES = ("up", "failed", "idle", "cancelled", "needs_reboot",
+                  "timeout")
 
 
 class SupervisorClient:
@@ -287,7 +296,9 @@ def interactive_mode(watch: bool = False):
             elif cmd in ("owl", "vlm", "none"):
                 do_switch(cmd)
             elif cmd == "reboot":
-                confirm = input("Reboot the Jetson? (yes/no): ").strip().lower()
+                confirm = input("Reboot the Jetson? On battery it may not "
+                                "come back without wall power. "
+                                "(yes/no): ").strip().lower()
                 if confirm == "yes":
                     client.reboot()
                     print("Reboot sent. Connection will drop...")

@@ -204,7 +204,8 @@ def interactive_mode():
                 proxy.clear_output_stack()
                 print("Stack cleared")
             elif cmd == "reboot":
-                confirm = input("Are you sure you want to reboot the Jetson? (yes/no): ").strip().lower()
+                confirm = input("Reboot the Jetson? On battery it may not come "
+                                "back without wall power. (yes/no): ").strip().lower()
                 if confirm == "yes":
                     result = proxy.reboot()
                     print(result)
