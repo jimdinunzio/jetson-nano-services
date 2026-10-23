@@ -18,6 +18,7 @@ Commands:
   - disable_arm()           - open the jaws, then shut that stack down
   - pick_can(x, y, z)       - pick the object at x,y,z and carry it
   - place_can()             - place what is being carried
+  - drop_can()              - let go where the arm is, and forget what was held
   - move_to_state(name)     - move to a named state ('stow', 'init', ...)
   - reset_arm(state)        - recover: clear the scene, let go, go home
   - wave_arm(waves)         - wave hello, then stow
@@ -696,6 +697,19 @@ class ArmService:
             return blocked
         args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--place']
         return self._run('place_can', args, timeout)
+
+    def drop_can(self, timeout=STATE_TIMEOUT):
+        """Open the jaws where the arm is, dropping whatever is held.
+
+        Runs `ros2 run dofbot_ctrl pick_place -- --drop`: no motion, then the
+        attached object is detached and removed from the planning scene, so
+        the next move plans as if the gripper were empty -- because it is.
+        """
+        blocked = self._require_enabled('drop_can')
+        if blocked:
+            return blocked
+        args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--drop']
+        return self._run('drop_can', args, timeout)
 
     def move_to_state(self, name, timeout=STATE_TIMEOUT):
         """Move to one of the saved states -- see list_states().

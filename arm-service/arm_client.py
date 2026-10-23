@@ -11,6 +11,7 @@ run this file for a command line:
     python3 arm_client.py state init
     python3 arm_client.py pick 0.30 0.0 0.061
     python3 arm_client.py place
+    python3 arm_client.py drop               # let go where the arm is
     python3 arm_client.py held               # is the can still in the jaws?
     python3 arm_client.py wave 3
     python3 arm_client.py reset              # giving up after a failed pick
@@ -142,6 +143,10 @@ class ArmClient:
     def place_can(self) -> Dict[str, Any]:
         """Place whatever the gripper is carrying."""
         return self._call(self._motion, 'place_can')
+
+    def drop_can(self) -> Dict[str, Any]:
+        """Open the jaws where the arm is, and forget whatever was held."""
+        return self._call(self._motion, 'drop_can')
 
     def is_holding(self, object: str = '') -> Dict[str, Any]:
         """Look through the wrist camera: is the object still in the jaws?
@@ -288,6 +293,7 @@ INTERACTIVE_HELP = """Commands:
                         stop the stack
   pick X Y Z [object]   pick the object centred at X Y Z and carry it
   place                 place what the gripper is carrying
+  drop                  let go where the arm is, and forget what was held
   state NAME            move to a saved state
   reset [state] [force] clear the scene, let go, go home (giving up; a
                         retried pick resets itself)
@@ -342,6 +348,8 @@ def interactive(client: ArmClient):
                 show(client.disable_arm(args[0] if args else 'stow'))
             elif cmd == 'place':
                 show(client.place_can())
+            elif cmd == 'drop':
+                show(client.drop_can())
             elif cmd == 'wave':
                 show(client.wave_arm(int(args[0]) if args else 1))
             elif cmd == 'reset':
@@ -402,6 +410,8 @@ def build_parser():
     pick.add_argument('--object', default='', help='catalogue entry')
 
     sub.add_parser('place', help='place what the gripper is carrying')
+    sub.add_parser('drop', help='let go where the arm is, and forget what '
+                                'was held')
 
     state = sub.add_parser('state', help='move to a saved state')
     state.add_argument('name')
@@ -461,6 +471,8 @@ def main(argv=None):
                          cli.verbose) else 1
     if cli.cmd == 'place':
         return 0 if show(client.place_can(), cli.verbose) else 1
+    if cli.cmd == 'drop':
+        return 0 if show(client.drop_can(), cli.verbose) else 1
     if cli.cmd == 'state':
         return 0 if show(client.move_to_state(cli.name), cli.verbose) else 1
     if cli.cmd == 'reset':

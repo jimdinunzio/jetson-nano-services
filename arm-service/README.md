@@ -29,6 +29,7 @@ nothing here touches serial.
 | `disable_arm()` | opens the jaws, then stops that launch (whole process group) |
 | `pick_can(x, y, z)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z` |
 | `place_can()` | `ros2 run dofbot_ctrl pick_place -- --place` |
+| `drop_can()` | `ros2 run dofbot_ctrl pick_place -- --drop` |
 | `move_to_state(name)` | `ros2 run dofbot_ctrl move_to_state -- NAME` |
 | `reset_arm(state, force)` | `ros2 run dofbot_ctrl pick_place -- --reset STATE` |
 | `wave_arm(waves, finish, seconds)` | `ros2 run dofbot_ctrl wave_arm -- --waves N` |
@@ -110,6 +111,7 @@ python3 arm_client.py enable
 python3 arm_client.py state init
 python3 arm_client.py pick 0.30 0.0 0.061
 python3 arm_client.py place
+python3 arm_client.py drop                     # let go where the arm is
 python3 arm_client.py held                     # is the can still in the jaws?
 python3 arm_client.py wave 3                   # a greeting, then stow
 python3 arm_client.py reset                   # giving up after a failed pick
