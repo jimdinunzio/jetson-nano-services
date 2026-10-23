@@ -18,7 +18,7 @@ Commands:
   - disable_arm()           - open the jaws, then shut that stack down
   - pick_can(x, y, z)       - pick the object at x,y,z and carry it
   - place_can()             - place what is being carried
-  - move_to_state(name)     - move to a named state ('ready', 'init', ...)
+  - move_to_state(name)     - move to a named state ('stow', 'init', ...)
   - reset_arm(state)        - recover: clear the scene, let go, go home
   - wave_arm(waves)         - wave hello, then stow
   - is_holding()            - look: is the object still in the jaws?
@@ -110,12 +110,11 @@ VERDICT_PREFIX = 'VERDICT: '
 # one `ros2 run` startup plus one servo command -- a few seconds.
 RELEASE_TIMEOUT = 8
 
-# Where reset_arm() leaves the arm unless told otherwise. 'init' is folded low
-# and forward: a reset runs after a pick went wrong, and the next thing to look
-# for the object is the OAK-D on the chassis. Parking with the arm up leaves it
-# standing in that camera's view, blinding whatever has to decide what to do
-# next. Mirrors pick_place.RESET_STATE, the same choice one layer down.
-RESET_STATE = 'init'
+# Where reset_arm() leaves the arm unless told otherwise: 'stow', the pose the
+# robot drives in, clear of the lidar. 'init' is only for the OAK-D's last look
+# at a can just before a pick, and the pick moves there itself. Mirrors
+# pick_place.RESET_STATE, the same choice one layer down.
+RESET_STATE = 'stow'
 
 # One wave is 3s of gesture, but the planned moves in and out are ordinary
 # collision-checked moves and are the slow part. Generous: this exists to stop a
@@ -626,7 +625,7 @@ class ArmService:
         """Shut the pick_place stack down, opening the jaws on the way.
 
         Args:
-            park: optionally move to this named state first (e.g. 'init'),
+            park: optionally move to this named state first (e.g. 'stow'),
                   while the stack is still up to plan the move. Ignored if the
                   arm is not enabled; a failed park does not stop the shutdown.
 
@@ -662,6 +661,10 @@ class ArmService:
         grasp, attach, lift and carry, stopping short of the place. Call
         place_can() to finish, or move_to_state() to go somewhere else first.
 
+        Retry by calling this again: if an earlier pick left anything in the
+        planning scene, it resets first (dropping whatever is held). Call
+        reset_arm() only when giving up.
+
         Args:
             x, y, z: the object's CENTRE in base_link, metres. For something
                      sitting on the floor that is half its height, not zero.
@@ -682,7 +685,7 @@ class ArmService:
 
         Runs `ros2 run dofbot_ctrl pick_place -- --place`, the second half of
         the sequence pick_can() stops in the middle of: over the bin, open,
-        detach, back to carry.
+        detach, back to stow.
 
         Where the bin is is a named state ('over_trash') for now, nominally
         straight in front of the robot. When perception starts finding the bin
@@ -732,8 +735,8 @@ class ArmService:
         from up there instead.
 
         Args:
-            state: where to leave the arm afterwards. The default stays out
-                   of the OAK-D's view -- see RESET_STATE.
+            state: where to leave the arm afterwards. The default is the
+                   drive pose -- see RESET_STATE.
             force: if MoveIt will not plan out of where the arm is, drive out
                    blind -- joint interpolation, NOT COLLISION CHECKED. Watch
                    the arm and have the power switch to hand.
@@ -767,7 +770,7 @@ class ArmService:
         Args:
             waves:   back-and-forth swings (default 1).
             finish:  named state to stow at afterwards; '' uses the node's
-                     default ('init').
+                     default ('stow').
             seconds: how long ONE wave takes, so the pace holds whatever `waves`
                      says; 0 uses the node's default (3 s).
         """
@@ -825,8 +828,10 @@ class ArmService:
         was: a can that is not there is a successful query. `verdict` carries the same
         three states as text and `reason` says why in English.
 
-        Meaningful at 'carry', which is where a pick leaves the arm and where
-        the pixel region was measured. Asked with the arm somewhere else it is
+        Meaningful at 'stow', which is where a pick leaves the arm. The pixel
+        region was measured at the old 'carry' pose; stow points the tool
+        level rather than up, so whether it keeps the floor out of frame is
+        not yet checked. Asked with the arm somewhere else it is
         answering about a view nobody calibrated, and will mostly say no.
 
         Does not need the arm enabled -- a camera and a detector are not

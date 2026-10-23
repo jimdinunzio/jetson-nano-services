@@ -107,13 +107,13 @@ the error behind a failed pick is on disk there as well as in `reason`.
 ```bash
 python3 arm_client.py status
 python3 arm_client.py enable
-python3 arm_client.py state ready
-python3 arm_client.py pick 0.30 0.0 0.039
+python3 arm_client.py state init
+python3 arm_client.py pick 0.30 0.0 0.061
 python3 arm_client.py place
 python3 arm_client.py held                     # is the can still in the jaws?
-python3 arm_client.py wave 3                   # a greeting, then stow at init
-python3 arm_client.py reset                   # after a pick that failed partway
-python3 arm_client.py disable --park init
+python3 arm_client.py wave 3                   # a greeting, then stow
+python3 arm_client.py reset                   # giving up after a failed pick
+python3 arm_client.py disable                  # parks at stow, then stops
 python3 arm_client.py -i                     # interactive
 ```
 
@@ -153,7 +153,7 @@ runs, soda can, extended fingers, carpet:
 | 0.20–0.23 | solves, but off the proven grip height, standoff down to its 20 mm floor, under 0.05 rad of joint margin |
 | 0.24–0.27 | works; standoff climbing 45 → 80 mm |
 | **0.28–0.32** | **the sweet spot** — full 80 mm standoff, the 80 mm grip height proven on hardware, `grasp_pitch` landing on its preferred 2.2, > 0.12 rad of margin, and 20–50 mm of Cartesian lift |
-| 0.33–0.36 | still full standoff and full margin, but no straight-up lift left; `move_named('carry')` does the clearing |
+| 0.33–0.36 | still full standoff and full margin, but no straight-up lift left; `move_named('stow')` does the clearing |
 | 0.37–0.39 | degrades into shallow-pitch side grabs at a 20–45 mm standoff |
 | ≥ 0.40 | nothing solves at any pitch |
 
@@ -199,9 +199,11 @@ anything that hard-codes the values above has to read `DOFBOT_GRIPPER` the way
   would put a second `move_group` on the domain at the next attempt, and two
   action servers driving one arm is a far worse failure than a clean retry.
 - **After an aborted pick the planning scene still holds the object**, and
-  moves out of it fail instantly with `INVALID_MOTION_PLAN`. `reset_arm()` is
-  the way out: it clears the scene, opens the gripper and goes home, in that
-  order, because planning cannot get out of a hole the scene is holding it in.
+  moves out of it fail instantly with `INVALID_MOTION_PLAN`. **Retrying needs
+  nothing extra:** `pick_can()` finds what the earlier run left and resets
+  first. `reset_arm()` is for giving up rather than retrying: it clears the
+  scene, opens the gripper and goes home, in that order, because planning
+  cannot get out of a hole the scene is holding it in.
   `move_to_state()` will not do it — that deliberately does not touch the
   scene. `reset_arm(force=True)` is the last resort for when MoveIt will not
   plan from where the arm is; the blind move it makes is not collision checked.
@@ -214,17 +216,16 @@ anything that hard-codes the values above has to read `DOFBOT_GRIPPER` the way
   and nothing can drive the servo to fix it afterwards. It drops what is held
   where the arm is standing, deliberately, for the same reason `reset_arm()`
   does.
-- **`reset_arm()` parks at `init`, folded low and forward** — not at `ready`.
-  A reset runs after a pick went wrong, and the next thing to look for the
-  object is the OAK-D on the chassis; parking with the arm up leaves it
-  standing in that camera's view. Pass a state to override it.
+- **`reset_arm()` parks at `stow`**, the pose the robot drives in, clear of
+  the lidar. `init` is only for the OAK-D's last look at a can before a pick.
+  Pass a state to override it.
 - **`place_can()` drops at a named state, not at a coordinate.** `over_trash`
   is nominally straight in front of the robot and is a placeholder for a bin
   perception has yet to find; when it does, this grows the coordinates
   `pick_can()` already takes.
 - **`wave_arm()` is a gesture, not a pose command.** It plans into a raised
   pose, sends the swings as one timed trajectory so the arm does not stop dead
-  at each end of the swing, and stows at `init`. It goes through
+  at each end of the swing, and stows at `stow`. It goes through
   `moveit_bridge` like everything else, so the arm stays enabled and the whole
   path is collision-checked against the live scene — a wave refuses rather than
   sweeping through something the scene knows about.
@@ -248,15 +249,17 @@ anything that hard-codes the values above has to read `DOFBOT_GRIPPER` the way
   a sliver and no detector will name it. nanoOWL is asked to choose between
   *an empty gripper* and *a gripper holding a soda can* instead, which needs no
   detectable object: measured, 0.99 holding and 0.93 empty.
-- **It reads the WHOLE frame, so it means what it says at `carry` and nowhere
-  else.** Carry points the tool well up and shows no floor, so the only can
-  that can appear is the one being held. Asked from a pose that CAN see the
+- **It reads the WHOLE frame, so it means what it says at `stow` and nowhere
+  else.** It was measured at the old `carry` pose, which pointed the tool well
+  up and showed no floor, so the only can that could appear was the one being
+  held. `stow` points the tool level; whether it keeps the floor out of frame
+  has not been checked yet. Asked from a pose that CAN see the
   floor, a can lying there reads as held at 1.000 — a confident wrong answer,
   not a weak one. See ARCHITECTURE.md, *Seeing the pick*.
 - **It does not need the arm enabled**, since a camera and a detector are not
   `move_group` — but it does take the motion lock, so it comes back `busy`
   during a pick rather than photographing a moving arm.
-- **A pick asks the same two questions itself**, at the standoff and at carry,
+- **A pick asks the same two questions itself**, at the standoff and at stow,
   and aborts on a definite no. It never aborts on `unknown`, so a pick on a
   machine with nanoOWL stopped runs exactly as it always did. `reset_arm()` is
   the way out of one that aborted after the grasp.
