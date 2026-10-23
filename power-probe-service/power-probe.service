@@ -1,0 +1,18 @@
+[Unit]
+# TEMPORARY: debug logging for the power losses. Remove with uninstall.sh.
+Description=Power probe (TEMPORARY debug logging of Jetson power rails)
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/jim/Documents/git/jetson-nano-services/power-probe-service/power_probe.py
+Restart=on-failure
+RestartSec=5
+User=jim
+# Creates /var/log/power-probe owned by User and passes it as $LOGS_DIRECTORY.
+LogsDirectory=power-probe
+# Environment=POWER_PROBE_HZ=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
