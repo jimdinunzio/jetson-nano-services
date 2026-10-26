@@ -18,6 +18,8 @@ run this file for a command line:
                                              # (a retried pick resets itself);
                                              # parks clear of the OAK-D
     python3 arm_client.py disable            # parks at stow, then stops
+    python3 arm_client.py torque off         # disables the arm, then goes limp
+    python3 arm_client.py torque on          # holds; enable to command it
     python3 arm_client.py -i             # interactive
 
 The server address comes from --url, then $DOFBOT_ARM_URL, then the default
@@ -181,6 +183,17 @@ class ArmClient:
         """
         return self._call(self._motion, 'reset_arm', str(state), bool(force))
 
+    def set_torque(self, on: bool) -> Dict[str, Any]:
+        """Servo torque on or off. TORQUE OFF DISABLES THE ARM.
+
+        Off disables the arm first if it is enabled -- the jaws open and drop
+        whatever is held -- and then the arm goes limp under its own weight;
+        support it. On holds the servos where they stand. A disabled arm stays
+        disabled; enable_arm() is what makes it commandable again, and turns
+        torque on by itself.
+        """
+        return self._call(self._motion, 'set_torque', bool(on))
+
     def wave_arm(self, waves: int = 1, finish: str = '',
                  seconds: float = 0.0) -> Dict[str, Any]:
         """Wave hello, then stow the arm.
@@ -299,6 +312,7 @@ INTERACTIVE_HELP = """Commands:
                         retried pick resets itself)
   wave [N]              wave hello N times, then stow
   held [object]         look: is the object still in the jaws?
+  torque on|off         servo torque; off DISABLES the arm, then goes limp
   states                list the saved states
   status                enabled? busy? what ran last?
   log [N]               tail the launch log
@@ -341,6 +355,12 @@ def interactive(client: ArmClient):
                 show(client.stop())
             elif cmd == 'held':
                 show_held(client.is_holding(args[0] if args else ''))
+            elif cmd == 'torque':
+                if args not in (['on'], ['off']):
+                    print('Usage: torque on|off   (off disables the arm, '
+                          'then it goes limp -- support it)')
+                else:
+                    show(client.set_torque(args[0] == 'on'))
             elif cmd == 'enable':
                 print('Starting the stack, this takes a few seconds...')
                 show(client.enable_arm(bridge='--sim' not in args))
@@ -437,6 +457,11 @@ def build_parser():
     held.add_argument('object', nargs='?', default='',
                       help='catalogue entry to look for')
 
+    torque = sub.add_parser('torque',
+                            help='servo torque; off DISABLES the arm first, '
+                                 'then it goes limp -- support it')
+    torque.add_argument('state', choices=('on', 'off'))
+
     sub.add_parser('states', help='list the saved states')
     sub.add_parser('status', help='server and stack status')
     sub.add_parser('stop', help='abort the motion in flight')
@@ -483,6 +508,9 @@ def main(argv=None):
                          cli.verbose) else 1
     if cli.cmd == 'held':
         return 0 if show_held(client.is_holding(cli.object)) else 1
+    if cli.cmd == 'torque':
+        return 0 if show(client.set_torque(cli.state == 'on'),
+                         cli.verbose) else 1
     if cli.cmd == 'stop':
         return 0 if show(client.stop(), cli.verbose) else 1
     if cli.cmd == 'states':

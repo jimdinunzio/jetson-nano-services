@@ -34,6 +34,7 @@ nothing here touches serial.
 | `reset_arm(state, force)` | `ros2 run dofbot_ctrl pick_place -- --reset STATE` |
 | `wave_arm(waves, finish, seconds)` | `ros2 run dofbot_ctrl wave_arm -- --waves N` |
 | `is_holding(object)` | `ros2 run dofbot_ctrl vision_check -- --held` |
+| `set_torque(on)` | off: `disable_arm()` first, then `ros2 run dofbot_ctrl set_torque off`. on: `ros2 run dofbot_ctrl set_torque on` (nothing to do while enabled) |
 
 Plus `list_states()`, `stop()`, `tail_log()`, `get_status()`, `ping()`.
 
@@ -236,6 +237,13 @@ anything that hard-codes the values above has to read `DOFBOT_GRIPPER` the way
   *picking* speed, set so the servos do not trail the plan by the bridge's
   200 ms `track_time_ms` and put the gripper somewhere the plan did not. A wave
   has nothing to arrive at, so the same lag only softens the ends of the swing.
+- **Torque off disables the arm.** `set_torque(False)` runs `disable_arm()`
+  first -- the jaws open and drop whatever is held -- and then the arm goes
+  limp under its own weight. A limp arm under a running stack is one MoveIt
+  still believes is where it left it, so the two are never separated.
+  `set_torque(True)` on a disabled arm holds it where it stands and leaves it
+  disabled; `enable_arm()` is what makes it commandable, and its bridge turns
+  torque on by itself.
 - **`is_holding()` LOOKS, it does not remember.** It grabs a frame from the
   wrist camera and puts it to nanoOWL. The point of the question is exactly the
   case where a live look and the planning scene disagree — a can that was

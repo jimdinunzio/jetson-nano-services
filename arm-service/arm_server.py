@@ -23,6 +23,7 @@ Commands:
   - reset_arm(state)        - recover: clear the scene, let go, go home
   - wave_arm(waves)         - wave hello, then stow
   - is_holding()            - look: is the object still in the jaws?
+  - set_torque(on)          - servo torque; OFF DISABLES THE ARM first
 plus list_states(), stop(), tail_log(), get_status() and ping().
 
 is_holding() is the odd one out: it needs no move_group, only the wrist camera
@@ -654,6 +655,50 @@ class ArmService:
             released += ('%s; ' % what if result['ok']
                          else '%s failed (%s); ' % (what, result['error']))
         return _result(True, 'disable_arm', 0, released + self._stop_launch())
+
+    def set_torque(self, on=True, timeout=STATE_TIMEOUT):
+        """Switch servo torque on or off. TORQUE OFF DISABLES THE ARM.
+
+        Args:
+            on: True to hold, False to go limp.
+
+        OFF disables the arm first when it is enabled -- disable_arm(), so the
+        jaws open and drop whatever is held -- then cuts torque with
+        `ros2 run dofbot_ctrl set_torque off`. The two cannot be separated: a
+        limp arm under a running stack is one MoveIt still believes is where it
+        left it, and the next move snaps it back from wherever it was pushed.
+        The arm goes limp and falls under its own weight; support it.
+
+        ON with the arm disabled holds the servos where they stand and moves
+        nothing; the arm stays disabled, and enable_arm() is what makes it
+        commandable again (its bridge turns torque on itself). ON with the arm
+        enabled has nothing to do: the bridge owns the port and turned torque
+        on when it started.
+        """
+        if bool(on):
+            if self._launch_alive():
+                return _result(True, 'set_torque', 0,
+                               'arm is enabled; its bridge already holds '
+                               'torque on')
+            result = self._run('set_torque', ['ros2', 'run', 'dofbot_ctrl',
+                                              'set_torque', 'on'], timeout)
+            if result['ok']:
+                result['output'] += ('\ntorque on; the arm is still disabled '
+                                     '-- enable_arm() to command it')
+            return result
+
+        disabled = ''
+        if self._launch_alive():
+            gone = self.disable_arm()
+            disabled = ('torque off disables the arm: %s; '
+                        % gone['output'].strip())
+        result = self._run('set_torque', ['ros2', 'run', 'dofbot_ctrl',
+                                          'set_torque', 'off'], timeout)
+        result['output'] = (disabled + result['output']
+                            + ('\narm disabled and limp -- support it; '
+                               'enable_arm() turns torque back on'
+                               if result['ok'] else ''))
+        return result
 
     def pick_can(self, x, y, z, object='', timeout=PICK_TIMEOUT):
         """Pick the object centred at (x, y, z) and carry it.
