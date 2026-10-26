@@ -27,7 +27,7 @@ nothing here touches serial.
 |---|---|
 | `enable_arm()` | `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false` |
 | `disable_arm()` | opens the jaws, then stops that launch (whole process group) |
-| `pick_can(x, y, z)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z` |
+| `pick_can(x, y, z, object, lift)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z` (plus `--no-lift` when `lift` is False) |
 | `place_can()` | `ros2 run dofbot_ctrl pick_place -- --place` |
 | `drop_can()` | `ros2 run dofbot_ctrl pick_place -- --drop` |
 | `move_to_state(name)` | `ros2 run dofbot_ctrl move_to_state -- NAME` |

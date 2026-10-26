@@ -700,7 +700,7 @@ class ArmService:
                                if result['ok'] else ''))
         return result
 
-    def pick_can(self, x, y, z, object='', timeout=PICK_TIMEOUT):
+    def pick_can(self, x, y, z, object='', lift=True, timeout=PICK_TIMEOUT):
         """Pick the object centred at (x, y, z) and carry it.
 
         Runs `ros2 run dofbot_ctrl pick_place -- --pick x y z`: approach,
@@ -715,6 +715,8 @@ class ArmService:
             x, y, z: the object's CENTRE in base_link, metres. For something
                      sitting on the floor that is half its height, not zero.
             object:  catalogue entry to grasp as; '' uses the node's default.
+            lift:    False adds --no-lift: skip the straight-up lift after
+                     the grasp and go directly to stow.
             timeout: seconds before the command is killed.
         """
         blocked = self._require_enabled('pick_can')
@@ -723,6 +725,8 @@ class ArmService:
         args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--pick']
         if object:
             args += ['--object', str(object)]
+        if not lift:
+            args += ['--no-lift']
         args += ['%g' % float(x), '%g' % float(y), '%g' % float(z)]
         return self._run('pick_can', args, timeout)
 
