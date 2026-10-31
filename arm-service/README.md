@@ -27,7 +27,7 @@ nothing here touches serial.
 |---|---|
 | `enable_arm()` | `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false` |
 | `disable_arm()` | opens the jaws, then stops that launch (whole process group) |
-| `pick_can(x, y, z, object, lift)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z` (plus `--no-lift` when `lift` is False) |
+| `pick_can(x, y, z, object, vision)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z` (plus `--no-vision` when `vision` is False) |
 | `place_can()` | `ros2 run dofbot_ctrl pick_place -- --place` |
 | `drop_can()` | `ros2 run dofbot_ctrl pick_place -- --drop` |
 | `move_to_state(name)` | `ros2 run dofbot_ctrl move_to_state -- NAME` |
@@ -155,8 +155,8 @@ runs, soda can, extended fingers, carpet:
 | < 0.20 | nothing solves at any pitch |
 | 0.20–0.23 | solves, but off the proven grip height, standoff down to its 20 mm floor, under 0.05 rad of joint margin |
 | 0.24–0.27 | works; standoff climbing 45 → 80 mm |
-| **0.28–0.32** | **the sweet spot** — full 80 mm standoff, the 80 mm grip height proven on hardware, `grasp_pitch` landing on its preferred 2.2, > 0.12 rad of margin, and 20–50 mm of Cartesian lift |
-| 0.33–0.36 | still full standoff and full margin, but no straight-up lift left; `move_named('stow')` does the clearing |
+| **0.28–0.32** | **the sweet spot** — full 80 mm standoff, the 80 mm grip height proven on hardware, `grasp_pitch` landing on its preferred 2.2, > 0.12 rad of margin |
+| 0.33–0.36 | still full standoff and full margin |
 | 0.37–0.39 | degrades into shallow-pitch side grabs at a 20–45 mm standoff |
 | ≥ 0.40 | nothing solves at any pitch |
 

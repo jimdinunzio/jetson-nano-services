@@ -84,7 +84,7 @@ BRIDGE_NODE = '/moveit_bridge'
 # to, so that action server -- not the node -- is the readiness signal.
 MOVE_ACTION = '/move_action'
 
-# Seconds. Picks are slow -- approach, grasp, lift and carry are each a planned
+# Seconds. Picks are slow -- approach, grasp and carry are each a planned
 # move -- so the ceiling is generous; it exists to stop a wedged command from
 # holding the motion lock forever, not to bound normal operation.
 ENABLE_TIMEOUT = 90
@@ -718,11 +718,11 @@ class ArmService:
                                if result['ok'] else ''))
         return result
 
-    def pick_can(self, x, y, z, object='', lift=True, timeout=PICK_TIMEOUT):
+    def pick_can(self, x, y, z, object='', vision=True, timeout=PICK_TIMEOUT):
         """Pick the object centred at (x, y, z) and carry it.
 
         Runs `ros2 run dofbot_ctrl pick_place -- --pick x y z`: approach,
-        grasp, attach, lift and carry, stopping short of the place. Call
+        grasp, attach and carry, stopping short of the place. Call
         place_can() to finish, or move_to_state() to go somewhere else first.
 
         Retry by calling this again: if an earlier pick left anything in the
@@ -733,8 +733,8 @@ class ArmService:
             x, y, z: the object's CENTRE in base_link, metres. For something
                      sitting on the floor that is half its height, not zero.
             object:  catalogue entry to grasp as; '' uses the node's default.
-            lift:    False adds --no-lift: skip the straight-up lift after
-                     the grasp and go directly to stow.
+            vision:  False adds --no-vision: skip both wrist-camera checks,
+                     approach and held.
             timeout: seconds before the command is killed.
         """
         blocked = self._require_enabled('pick_can')
@@ -743,8 +743,8 @@ class ArmService:
         args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--pick']
         if object:
             args += ['--object', str(object)]
-        if not lift:
-            args += ['--no-lift']
+        if not vision:
+            args += ['--no-vision']
         args += ['%g' % float(x), '%g' % float(y), '%g' % float(z)]
         return self._run('pick_can', args, timeout)
 
