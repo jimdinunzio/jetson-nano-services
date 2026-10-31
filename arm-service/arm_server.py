@@ -572,6 +572,9 @@ class ArmService:
         Returns a result dict. Enabling twice is not an error; the second call
         reports the stack that is already up.
 
+        Once the stack is up it also warms nanoOWL (see _warm_owl), which adds
+        a second or two and never fails the enable.
+
         moveit_bridge needs exclusive access to the serial port: stop
         gui_teleop and joint_state_mirror before calling this.
         """
@@ -620,8 +623,23 @@ class ArmService:
             return _result(False, 'enable_arm', error=detail,
                            output=self.tail_log(40),
                            seconds=time.time() - started)
-        return _result(True, 'enable_arm', 0, detail,
+        return _result(True, 'enable_arm', 0,
+                       '%s; %s' % (detail, self._warm_owl()),
                        seconds=time.time() - started)
+
+    def _warm_owl(self):
+        """Load nanoOWL's classifier now, so a pick's first check does not.
+
+        The first classification a nanoOWL process sees takes ~3 s to load
+        CLIP, past the pick's 2 s socket timeout, and the check comes back
+        UNKNOWN. Never fails the enable: nanoOWL is often not the one running
+        on the GPU, and the pick passes UNKNOWN anyway. Returns what happened.
+        """
+        result = self._run('warm_owl', ['ros2', 'run', 'dofbot_ctrl',
+                                        'vision_check', '--', '--warm-up'],
+                           VISION_TIMEOUT)
+        lines = result['output'].strip().splitlines()
+        return lines[-1] if lines else 'nanoOWL not warmed: %s' % result['error']
 
     def disable_arm(self, park=''):
         """Shut the pick_place stack down, opening the jaws on the way.
