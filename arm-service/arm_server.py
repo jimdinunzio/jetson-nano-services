@@ -755,7 +755,7 @@ class ArmService:
         the sequence pick_can() stops in the middle of: over the bin, open,
         detach, back to stow.
 
-        Where the bin is is a named state ('over_trash') for now, nominally
+        Where the bin is is a named state ('trash') for now, nominally
         straight in front of the robot. When perception starts finding the bin
         this grows the coordinates pick_can() already takes.
         """

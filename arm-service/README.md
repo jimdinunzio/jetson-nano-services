@@ -222,7 +222,7 @@ anything that hard-codes the values above has to read `DOFBOT_GRIPPER` the way
 - **`reset_arm()` parks at `stow`**, the pose the robot drives in, clear of
   the lidar. `init` is only for the OAK-D's last look at a can before a pick.
   Pass a state to override it.
-- **`place_can()` drops at a named state, not at a coordinate.** `over_trash`
+- **`place_can()` drops at a named state, not at a coordinate.** `trash`
   is nominally straight in front of the robot and is a placeholder for a bin
   perception has yet to find; when it does, this grows the coordinates
   `pick_can()` already takes.
