@@ -12,6 +12,12 @@ User=jim
 Environment=HOME=/home/jim
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=ROS_DISTRO=humble
+# The surface the robot stands on; chassis.xacro places the collision floor
+# from it, and pick_place warns when a target sits below that floor. Unset is
+# hard too, but say it here: carpet on a hard floor puts the collision floor
+# 4 mm too high, so every pick grasps a can standing inside it and cannot plan
+# the carry. carpet | hard.
+Environment=DOFBOT_FLOOR=hard
 # Override the workspace, port or launch log here if needed:
 # Environment=DOFBOT_WS=/home/jim/ros2_ws
 # Environment=DOFBOT_ARM_PORT=8001

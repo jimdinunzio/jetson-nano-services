@@ -25,7 +25,7 @@ nothing here touches serial.
 
 | method | what it runs |
 |---|---|
-| `enable_arm()` | `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false` |
+| `enable_arm(timeout, bridge, rviz, port, floor)` | `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false`, with `DOFBOT_FLOOR` set to `floor` |
 | `disable_arm()` | opens the jaws, then stops that launch (whole process group) |
 | `pick_can(x, y, z, object, vision)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z` (plus `--no-vision` when `vision` is False) |
 | `place_can()` | `ros2 run dofbot_ctrl pick_place -- --place` |
@@ -108,7 +108,7 @@ the error behind a failed pick is on disk there as well as in `reason`.
 
 ```bash
 python3 arm_client.py status
-python3 arm_client.py enable
+python3 arm_client.py enable --floor hard       # the surface the robot is on
 python3 arm_client.py state init
 python3 arm_client.py pick 0.30 0.0 0.061
 python3 arm_client.py place
@@ -175,6 +175,13 @@ shoulder, at a fixed 60 mm, and swinging sideways only opens that up. 100° is
 the gate; prefer to turn the base anyway, since a square approach costs one
 cheap rotation.
 
+**Hard floor: the same band.** Two picks at 0.338 and 0.343 m, about 8° of
+yaw, once failed with `INVALID_MOTION_PLAN` and looked like the far edge
+moving in. They were not: the stack was modelling carpet (see the floor note
+under *Things worth knowing*), and every hard-floor pick failed the same way at
+any distance. With the floor set right, 0.335 m at 8° picks, and so do
+0.20–0.22 straight ahead. The band above has not been re-swept on hard floor;
+it was never what failed.
 **These numbers are for the EXTENDED fingers.** They move the whole working ring
 outward. On the stock jaws with the 30 mm test block the same sweep gives a band
 of 0.13–0.31 and a sweet spot of 0.20–0.29 — different constants entirely, so
@@ -189,6 +196,15 @@ anything that hard-codes the values above has to read `DOFBOT_GRIPPER` the way
   upright 122 mm can on office carpet is `z = -0.022 + 0.061 = 0.039`; on a hard
   floor `-0.026 + 0.061 = 0.035`. Both ground figures are measured, and which
   one applies is what `DOFBOT_FLOOR` selects (see `chassis.xacro`).
+- **The floor is chosen at `enable_arm(floor=...)`, `'carpet'` or `'hard'`.**
+  It is built into the URDF when the stack starts, so it holds until
+  `disable_arm()`; asking for a different one while enabled is an error, not
+  ignored. Left out, it is the server's own `DOFBOT_FLOOR` (the unit file sets
+  `hard`), else hard. `get_status()` reports it as `floor`. **Get it wrong and
+  every pick fails right after the grasp**: carpet's floor is 4 mm above a hard
+  one, so a hard-floor can stands inside it, and once attached the move up to
+  `ready` starts in collision -- `INVALID_MOTION_PLAN` at `move_named('ready')`,
+  with `floor_link`/`soda_can` in the launch log.
 - **The arm must be enabled first.** Motion commands do not auto-enable; being
   explicit is what stops a stray call from starting a stack nobody expected.
 - **One motion at a time.** A second request comes back `busy` rather than

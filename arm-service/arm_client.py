@@ -123,9 +123,14 @@ class ArmClient:
     # -------------------------------------------------------------- commands
 
     def enable_arm(self, timeout: int = 90, bridge: bool = True,
-                   rviz: bool = False, port: str = '') -> Dict[str, Any]:
-        """Start the ROS stack. Blocks until the nodes are up or it gives up."""
-        return self._call(self._motion, 'enable_arm', timeout, bridge, rviz, port)
+                   rviz: bool = False, port: str = '',
+                   floor: str = '') -> Dict[str, Any]:
+        """Start the ROS stack. Blocks until the nodes are up or it gives up.
+
+        floor is 'carpet' or 'hard', the surface the robot stands on; '' takes
+        the server's default. Fixed until disable_arm()."""
+        return self._call(self._motion, 'enable_arm', timeout, bridge, rviz,
+                          port, floor)
 
     def disable_arm(self, park: str = '') -> Dict[str, Any]:
         """Open the jaws, optionally move to `park`, then stop the ROS stack.
@@ -303,7 +308,9 @@ def show_status(status: Optional[dict]):
 
 
 INTERACTIVE_HELP = """Commands:
-  enable [--sim]        start the ROS stack (--sim: no servo bridge)
+  enable [--sim] [carpet|hard]
+                        start the ROS stack (--sim: no servo bridge; the
+                        floor defaults to the server's)
   disable [state]       open the jaws, park at state (default stow), and
                         stop the stack
   pick X Y Z [object] [no-vision]
@@ -367,7 +374,9 @@ def interactive(client: ArmClient):
                     show(client.set_torque(args[0] == 'on'))
             elif cmd == 'enable':
                 print('Starting the stack, this takes a few seconds...')
-                show(client.enable_arm(bridge='--sim' not in args))
+                floor = [a for a in args if a in ('carpet', 'hard')]
+                show(client.enable_arm(bridge='--sim' not in args,
+                                       floor=floor[0] if floor else ''))
             elif cmd == 'disable':
                 show(client.disable_arm(args[0] if args else 'stow'))
             elif cmd == 'place':
@@ -422,6 +431,9 @@ def build_parser():
                         help='simulation only -- no moveit_bridge, no servos')
     enable.add_argument('--rviz', action='store_true',
                         help='also start RViz on the robot')
+    enable.add_argument('--floor', choices=('carpet', 'hard'), default='',
+                        help="surface the robot stands on (default: the "
+                             "server's DOFBOT_FLOOR)")
     enable.add_argument('--timeout', type=int, default=90)
 
     disable = sub.add_parser('disable', help='stop the ROS stack')
@@ -496,7 +508,8 @@ def main(argv=None):
     if cli.cmd == 'enable':
         return 0 if show(client.enable_arm(timeout=cli.timeout,
                                            bridge=not cli.sim,
-                                           rviz=cli.rviz), cli.verbose) else 1
+                                           rviz=cli.rviz, floor=cli.floor),
+                         cli.verbose) else 1
     if cli.cmd == 'disable':
         return 0 if show(client.disable_arm(cli.park), cli.verbose) else 1
     if cli.cmd == 'pick':

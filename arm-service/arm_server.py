@@ -118,6 +118,12 @@ RELEASE_TIMEOUT = 8
 # pick_place.RESET_STATE, the same choice one layer down.
 RESET_STATE = 'stow'
 
+# Surfaces chassis.xacro knows, by DOFBOT_FLOOR value. The floor is baked into
+# the URDF when the launch starts, so it is chosen at enable_arm() and fixed
+# until disable_arm(). Unset falls back to this server's own DOFBOT_FLOOR (the
+# unit file sets it), then to hard, as chassis.xacro does.
+FLOORS = ('carpet', 'hard')
+
 # One wave is 3s of gesture, but the planned moves in and out are ordinary
 # collision-checked moves and are the slow part. Generous: this exists to stop a
 # wedged command holding the motion lock, not to bound normal operation.
@@ -379,6 +385,7 @@ class ArmService:
         self._launch = None
         self._launch_started = 0.0
         self._launch_argv = []
+        self._floor = ''
         self._launch_fh = None
         self._launch_lock = threading.Lock()
         # Non-reentrant and never blocked on: a motion request that arrives
@@ -554,7 +561,7 @@ class ArmService:
     # --------------------------------------------------------------- commands
 
     def enable_arm(self, timeout=ENABLE_TIMEOUT, bridge=True, rviz=False,
-                   port=''):
+                   port='', floor=''):
         """Start the pick_place stack and wait for it to come up.
 
         Runs `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false`, which
@@ -568,6 +575,11 @@ class ArmService:
             rviz:    start RViz on the robot. Normally false -- run RViz on a
                      laptop with `ros2 launch dofbot_moveit moveit_rviz.launch.py`.
             port:    serial port override, '' for the launch default.
+            floor:   'carpet' or 'hard': the surface the robot stands on,
+                     which places the collision floor. '' uses this server's
+                     DOFBOT_FLOOR, else hard. Wrong here, every pick fails
+                     once the can is lifted: a hard-floor can is 4 mm inside a
+                     carpet floor. Fixed until disable_arm().
 
         Returns a result dict. Enabling twice is not an error; the second call
         reports the stack that is already up.
@@ -578,39 +590,57 @@ class ArmService:
         moveit_bridge needs exclusive access to the serial port: stop
         gui_teleop and joint_state_mirror before calling this.
         """
+        floor = floor or os.environ.get('DOFBOT_FLOOR', '') or 'hard'
+        if floor not in FLOORS:
+            return _result(False, 'enable_arm',
+                           error='unknown floor %r; one of %s'
+                                 % (floor, ', '.join(FLOORS)))
         with self._launch_lock:
             if self._launch_alive():
+                if floor != self._floor:
+                    # Not ignored: a stack on the wrong floor is exactly the
+                    # failure this option exists to prevent.
+                    return _result(False, 'enable_arm',
+                                   error='already enabled on %s floor; '
+                                         'disable_arm() first to change to %s'
+                                         % (self._floor, floor))
+                print('[enable_arm] already enabled on %s floor'
+                      % self._floor, flush=True)
                 return _result(True, 'enable_arm', 0,
-                               'already enabled (pid %d, up %.0fs)'
+                               'already enabled (pid %d, up %.0fs, %s floor)'
                                % (self._launch.pid,
-                                  time.time() - self._launch_started))
+                                  time.time() - self._launch_started,
+                                  self._floor))
             args = ['ros2', 'launch', 'dofbot_ctrl', 'pick_place.launch.py',
                     'rviz:=%s' % _b(rviz), 'bridge:=%s' % _b(bridge)]
             if port:
                 args.append('port:=%s' % port)
             argv = self._runner.argv(args)
-            print('[enable_arm] %s' % ' '.join(shlex.quote(a) for a in argv),
+            print('[enable_arm] %s floor: %s'
+                  % (floor, ' '.join(shlex.quote(a) for a in argv)),
                   flush=True)
             try:
                 # Truncated per launch: the log is evidence for THIS start, and
                 # a stale tail from the previous one is worse than no tail.
                 self._launch_fh = open(self._launch_log, 'w')
-                self._launch_fh.write('=== %s: %s\n'
+                self._launch_fh.write('=== %s: DOFBOT_FLOOR=%s %s\n'
                                       % (time.strftime('%Y-%m-%d %H:%M:%S'),
-                                         ' '.join(args)))
+                                         floor, ' '.join(args)))
                 self._launch_fh.flush()
                 self._launch = subprocess.Popen(
                     argv, stdout=self._launch_fh, stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL, start_new_session=True,
                     # Belt and braces with _printable: this keeps the escapes
                     # out of the log file too, where they are just noise.
-                    env=dict(os.environ, RCUTILS_COLORIZED_OUTPUT='0'))
+                    env=dict(os.environ, RCUTILS_COLORIZED_OUTPUT='0',
+                             DOFBOT_FLOOR=floor))
             except OSError as exc:
                 self._launch = None
                 return _result(False, 'enable_arm',
                                error='could not start the launch: %s' % exc)
             self._launch_argv = args
             self._launch_started = time.time()
+            self._floor = floor
 
         wanted = list(CORE_NODES) + ([BRIDGE_NODE] if bridge else [])
         started = time.time()
@@ -624,7 +654,7 @@ class ArmService:
                            output=self.tail_log(40),
                            seconds=time.time() - started)
         return _result(True, 'enable_arm', 0,
-                       '%s; %s' % (detail, self._warm_owl()),
+                       '%s; %s floor; %s' % (detail, floor, self._warm_owl()),
                        seconds=time.time() - started)
 
     def _warm_owl(self):
@@ -996,6 +1026,7 @@ class ArmService:
             'launch_uptime': (round(time.time() - self._launch_started, 1)
                               if self._launch_alive() else 0.0),
             'launch_args': list(self._launch_argv),
+            'floor': self._floor if self._launch_alive() else '',
             'launch_log': self._launch_log,
             'busy': task is not None,
             'running': task['name'] if task else '',
@@ -1092,6 +1123,13 @@ def main():
           % (runner.workspace, runner.distro,
              'sourced' if runner.sourced() else 'sourcing per command',
              cli.launch_log), flush=True)
+    # Both select collision geometry in the URDF the launch loads, and both
+    # fail silently when wrong: an unset DOFBOT_FLOOR models a hard floor, 4 mm
+    # below carpet. Printed so the journal says which one this ran with.
+    print('DOFBOT_FLOOR=%s DOFBOT_GRIPPER=%s'
+          % (os.environ.get('DOFBOT_FLOOR', '(unset: hard)'),
+             os.environ.get('DOFBOT_GRIPPER', '(unset: default)')),
+          flush=True)
     print('Server ready. SIGTERM/SIGINT stop the arm stack before exiting.',
           flush=True)
 
