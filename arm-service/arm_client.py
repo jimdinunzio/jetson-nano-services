@@ -9,8 +9,8 @@ run this file for a command line:
     python3 arm_client.py status
     python3 arm_client.py enable
     python3 arm_client.py state init
-    python3 arm_client.py pick 0.30 0.0 0.061
-    python3 arm_client.py pick 0.30 0.0 0.061 --no-vision # no camera checks
+    python3 arm_client.py pick 0.30 0.0 0.035   # can centre, hard floor
+    python3 arm_client.py pick 0.30 0.0 0.035 --no-vision # no camera checks
     python3 arm_client.py place
     python3 arm_client.py drop               # let go where the arm is
     python3 arm_client.py grip               # hand it a can: opens, 5 s, grips
