@@ -748,7 +748,8 @@ class ArmService:
                                if result['ok'] else ''))
         return result
 
-    def pick_can(self, x, y, z, object='', vision=True, timeout=PICK_TIMEOUT):
+    def pick_can(self, x, y, z, object='', vision=True, approach=False,
+                 held=True, timeout=PICK_TIMEOUT):
         """Pick the object centred at (x, y, z) and carry it.
 
         Runs `ros2 run dofbot_ctrl pick_place -- --pick x y z`: approach,
@@ -764,7 +765,11 @@ class ArmService:
                      sitting on the floor that is half its height, not zero.
             object:  catalogue entry to grasp as; '' uses the node's default.
             vision:  False adds --no-vision: skip both wrist-camera checks,
-                     approach and held.
+                     whatever `approach` and `held` say.
+            approach: look for the object between the open jaws before
+                     closing them (--approach-check). Off by default.
+            held:    look at stow that the object came with the arm. On by
+                     default; False adds --no-held-check.
             timeout: seconds before the command is killed.
         """
         blocked = self._require_enabled('pick_can')
@@ -775,6 +780,10 @@ class ArmService:
             args += ['--object', str(object)]
         if not vision:
             args += ['--no-vision']
+        if approach:
+            args += ['--approach-check']
+        if not held:
+            args += ['--no-held-check']
         args += ['%g' % float(x), '%g' % float(y), '%g' % float(z)]
         return self._run('pick_can', args, timeout)
 

@@ -142,12 +142,18 @@ class ArmClient:
         return self._call(self._motion, 'disable_arm', park)
 
     def pick_can(self, x: float, y: float, z: float,
-                 object: str = '', vision: bool = True) -> Dict[str, Any]:
+                 object: str = '', vision: bool = True,
+                 approach: bool = False, held: bool = True) -> Dict[str, Any]:
         """Pick the object whose CENTRE is at (x, y, z) in base_link, and carry
-        it. Does not place -- call place_can() for that. vision=False skips both
-        wrist-camera checks, approach and held."""
+        it. Does not place -- call place_can() for that.
+
+        The two wrist-camera checks are chosen separately: `approach` (object
+        between the open jaws, before closing; off by default) and `held`
+        (object came with the arm, at stow; on by default). vision=False skips
+        both."""
         return self._call(self._motion, 'pick_can', float(x), float(y),
-                          float(z), object, bool(vision))
+                          float(z), object, bool(vision), bool(approach),
+                          bool(held))
 
     def place_can(self) -> Dict[str, Any]:
         """Place whatever the gripper is carrying."""
@@ -313,9 +319,10 @@ INTERACTIVE_HELP = """Commands:
                         floor defaults to the server's)
   disable [state]       open the jaws, park at state (default stow), and
                         stop the stack
-  pick X Y Z [object] [no-vision]
+  pick X Y Z [object] [no-vision] [approach] [no-held]
                         pick the object centred at X Y Z and carry it
-                        (no-vision: skip the camera checks)
+                        (no-vision: skip both camera checks; approach: turn
+                        on the approach check; no-held: skip the held one)
   place                 place what the gripper is carrying
   drop                  let go where the arm is, and forget what was held
   state NAME            move to a saved state
@@ -395,15 +402,18 @@ def interactive(client: ArmClient):
                 else:
                     show(client.move_to_state(args[0]))
             elif cmd == 'pick':
-                vision = 'no-vision' not in args[3:]
-                rest = [a for a in args[3:] if a != 'no-vision']
+                flags = ('no-vision', 'approach', 'no-held')
+                rest = [a for a in args[3:] if a not in flags]
                 if len(args) < 3 or len(rest) > 1:
-                    print('Usage: pick X Y Z [object] [no-vision]   '
-                          '(metres, base_link, object CENTRE)')
+                    print('Usage: pick X Y Z [object] [no-vision] [approach] '
+                          '[no-held]   (metres, base_link, object CENTRE)')
                 else:
                     show(client.pick_can(float(args[0]), float(args[1]),
                                          float(args[2]),
-                                         rest[0] if rest else '', vision))
+                                         rest[0] if rest else '',
+                                         'no-vision' not in args[3:],
+                                         'approach' in args[3:],
+                                         'no-held' not in args[3:]))
             else:
                 print('Unknown command: %s' % cmd)
         except KeyboardInterrupt:
@@ -448,6 +458,11 @@ def build_parser():
     pick.add_argument('--object', default='', help='catalogue entry')
     pick.add_argument('--no-vision', dest='vision', action='store_false',
                       help='skip both wrist-camera checks, approach and held')
+    pick.add_argument('--approach', action='store_true',
+                      help='turn on the approach check: the object between '
+                           'the open jaws before closing (off by default)')
+    pick.add_argument('--no-held', dest='held', action='store_false',
+                      help='skip the held check at stow (on by default)')
 
     sub.add_parser('place', help='place what the gripper is carrying')
     sub.add_parser('drop', help='let go where the arm is, and forget what '
@@ -514,7 +529,7 @@ def main(argv=None):
         return 0 if show(client.disable_arm(cli.park), cli.verbose) else 1
     if cli.cmd == 'pick':
         return 0 if show(client.pick_can(cli.x, cli.y, cli.z, cli.object,
-                                         cli.vision),
+                                         cli.vision, cli.approach, cli.held),
                          cli.verbose) else 1
     if cli.cmd == 'place':
         return 0 if show(client.place_can(), cli.verbose) else 1

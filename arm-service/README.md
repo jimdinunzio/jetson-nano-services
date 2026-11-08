@@ -27,7 +27,7 @@ nothing here touches serial.
 |---|---|
 | `enable_arm(timeout, bridge, rviz, port, floor)` | `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false`, with `DOFBOT_FLOOR` set to `floor` |
 | `disable_arm()` | opens the jaws, then stops that launch (whole process group) |
-| `pick_can(x, y, z, object, vision)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z` (plus `--no-vision` when `vision` is False) |
+| `pick_can(x, y, z, object, vision, approach, held)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z`, plus `--approach-check` when `approach` is True, `--no-held-check` when `held` is False, `--no-vision` when `vision` is False |
 | `place_can()` | `ros2 run dofbot_ctrl pick_place -- --place` |
 | `drop_can()` | `ros2 run dofbot_ctrl pick_place -- --drop` |
 | `move_to_state(name)` | `ros2 run dofbot_ctrl move_to_state -- NAME` |
@@ -270,25 +270,31 @@ anything that hard-codes the values above has to read `DOFBOT_GRIPPER` the way
   the question got asked, so `ok` with `held` False is a working camera
   reporting an empty gripper. Treating `None` as `False` turns "the detector is
   busy elsewhere" into "you dropped it".
-- **It is a classification, not a detection.** The wrist camera is aimed about
-  five degrees past its own grip point, so a held can reaches the frame only as
-  a sliver and no detector will name it. nanoOWL is asked to choose between
-  *an empty gripper* and *a gripper holding a soda can* instead, which needs no
-  detectable object: measured, 0.99 holding and 0.93 empty.
-- **It reads the WHOLE frame, so it means what it says at `stow` and nowhere
-  else.** It was measured at the old `carry` pose, which pointed the tool well
-  up and showed no floor, so the only can that could appear was the one being
-  held. `stow` points the tool level; whether it keeps the floor out of frame
-  has not been checked yet. Asked from a pose that CAN see the
-  floor, a can lying there reads as held at 1.000 — a confident wrong answer,
-  not a weak one. See ARCHITECTURE.md, *Seeing the pick*.
+- **It is a classification, not a detection.** nanoOWL is asked to choose
+  between *an empty gripper* and *a gripper holding a soda can*, which needs no
+  detectable object: measured, 0.99 holding and 0.93 empty. **How much of a
+  held can is in frame depends on how high it was gripped**, and that varies
+  from pick to pick: gripped low, the can fills the middle of the frame and is
+  even detected; gripped high, only a sliver shows at the bottom edge and no
+  detector will name it. The classification is meant to cover both.
+- **It reads the WHOLE frame, and at `stow` that frame includes the floor.**
+  `stow` points the tool level, so the floor is in view, and a can lying there
+  can read as held at 1.000 — a confident wrong answer, not a weak one. The
+  wording was measured at an earlier pose that pointed the tool up and showed
+  no floor, where the only can that could appear was the held one; that pose is
+  gone. Until this is fixed, treat `held` True as "a can is in view", not
+  proof that the gripper has it. `held` False (a good look and no can) is still
+  meaningful. See ARCHITECTURE.md, *Seeing the pick*.
 - **It does not need the arm enabled**, since a camera and a detector are not
   `move_group` — but it does take the motion lock, so it comes back `busy`
   during a pick rather than photographing a moving arm.
-- **A pick asks the same two questions itself**, at the standoff and at stow,
-  and aborts on a definite no. It never aborts on `unknown`, so a pick on a
-  machine with nanoOWL stopped runs exactly as it always did. `reset_arm()` is
-  the way out of one that aborted after the grasp.
+- **A pick can ask the same question itself, at two points**, and aborts on a
+  definite no: the *approach* check, with the jaws open around the can before
+  they close, and the *held* check at stow. Each is its own switch:
+  `approach` is **off** by default, `held` is on, and `vision=False` turns both
+  off. It never aborts on `unknown`, so a pick on a machine with nanoOWL
+  stopped runs exactly as it always did. `reset_arm()` is the way out of one
+  that aborted after the grasp.
 - **`pick_can()` and `place_can()` are two processes.** The carried object lives
   in the planning scene between them, and that is where `--place` reads it
   from — so a server restart between the two halves is survivable, and
