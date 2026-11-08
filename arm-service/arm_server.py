@@ -128,6 +128,11 @@ RELEASE_TIMEOUT = 8
 # pick_place.RESET_STATE, the same choice one layer down.
 RESET_STATE = 'stow'
 
+# grip_can(): how long the jaws stay open for the hand-over by default, and
+# the most a caller may ask for -- the motion lock is held the whole time.
+GRIP_DELAY = 5.0
+GRIP_DELAY_MAX = 30.0
+
 # Surfaces chassis.xacro knows, by DOFBOT_FLOOR value. The floor is baked into
 # the URDF when the launch starts, so it is chosen at enable_arm() and fixed
 # until disable_arm(). Unset falls back to this server's own DOFBOT_FLOOR (the
@@ -849,6 +854,34 @@ class ArmService:
             return blocked
         args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--drop']
         return self._run('drop_can', args, timeout)
+
+    def grip_can(self, delay=GRIP_DELAY, object='', timeout=STATE_TIMEOUT):
+        """Take a can handed to the jaws: open, wait `delay` s, close, hold.
+
+        Runs `ros2 run dofbot_ctrl pick_place -- --grip --grip-delay DELAY`.
+        No motion: the jaws open where the arm is, wait for someone to put the
+        object between the fingers, then close to its grip -- the same squeeze
+        a pick uses -- and attach it, so place_can(), drop_can() and
+        reset_arm() release it exactly as after pick_can(). Refused while
+        something is already held, because opening would drop it.
+
+        For collecting held frames for the held check, or handing the arm a
+        can to carry without a pick. The caller tells the person when; the
+        server only opens, waits and closes.
+        """
+        delay = float(delay)
+        if not 0.0 <= delay <= GRIP_DELAY_MAX:
+            return _result(False, 'grip_can',
+                           error='delay %.1fs outside 0..%.0fs'
+                                 % (delay, GRIP_DELAY_MAX))
+        blocked = self._require_enabled('grip_can')
+        if blocked:
+            return blocked
+        args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--grip',
+                '--grip-delay', '%g' % delay]
+        if object:
+            args += ['--object', str(object)]
+        return self._run('grip_can', args, timeout + delay)
 
     def move_to_state(self, name, timeout=STATE_TIMEOUT):
         """Move to one of the saved states -- see list_states().

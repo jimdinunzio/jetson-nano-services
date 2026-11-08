@@ -31,6 +31,7 @@ nothing here touches serial.
 | `can_pick(x, y, z, object)` | `ros2 run dofbot_ctrl pick_place -- --check x y z`: would that pick plan? Moves nothing |
 | `place_can()` | `ros2 run dofbot_ctrl pick_place -- --place` |
 | `drop_can()` | `ros2 run dofbot_ctrl pick_place -- --drop` |
+| `grip_can(delay, object)` | `ros2 run dofbot_ctrl pick_place -- --grip --grip-delay DELAY` -- opens, waits for a hand-over, grips and holds as if picked |
 | `move_to_state(name)` | `ros2 run dofbot_ctrl move_to_state -- NAME` |
 | `current_state()` | `ros2 run dofbot_ctrl move_to_state -- --where`: which saved state the arm is in, as `state`, or None |
 | `reset_arm(state, force)` | `ros2 run dofbot_ctrl pick_place -- --reset STATE` |

@@ -13,6 +13,7 @@ run this file for a command line:
     python3 arm_client.py pick 0.30 0.0 0.061 --no-vision # no camera checks
     python3 arm_client.py place
     python3 arm_client.py drop               # let go where the arm is
+    python3 arm_client.py grip               # hand it a can: opens, 5 s, grips
     python3 arm_client.py held               # is the can still in the jaws?
     python3 arm_client.py wave 3
     python3 arm_client.py reset              # giving up after a failed pick
@@ -36,7 +37,7 @@ import http.client
 import os
 import sys
 import xmlrpc.client
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 DEFAULT_SERVER_URL = os.environ.get('DOFBOT_ARM_URL',
                                     'http://192.168.55.1:8001/')
@@ -170,6 +171,22 @@ class ArmClient:
     def drop_can(self) -> Dict[str, Any]:
         """Open the jaws where the arm is, and forget whatever was held."""
         return self._call(self._motion, 'drop_can')
+
+    def grip_can(self, delay: float = 5.0, object: str = '',
+                 say: Optional[Callable[[str], None]] = print
+                 ) -> Dict[str, Any]:
+        """Hand the arm a can: it opens, waits `delay` s, then grips it.
+
+        Announces the hand-over through `say` first (print by default; pass
+        None to stay quiet, or a speech function). Moves nothing; the jaws
+        close to the object's pick grip and it is then held exactly as after
+        pick_can(), so place_can() or drop_can() lets go of it. Refused while
+        something is already held.
+        """
+        if say is not None:
+            say('In %g seconds I will try to grip a can. Place it between my '
+                'fingers.' % delay)
+        return self._call(self._motion, 'grip_can', float(delay), object)
 
     def is_holding(self, object: str = '') -> Dict[str, Any]:
         """Look through the wrist camera: is the object still in the jaws?
@@ -353,6 +370,8 @@ INTERACTIVE_HELP = """Commands:
   check X Y Z [object]  would that pick plan? Moves nothing
   place                 place what the gripper is carrying
   drop                  let go where the arm is, and forget what was held
+  grip [seconds] [object]
+                        hand it a can: opens, waits (default 5 s), grips
   state NAME            move to a saved state
   reset [state] [force] clear the scene, let go, go home (giving up; a
                         retried pick resets itself)
@@ -421,6 +440,11 @@ def interactive(client: ArmClient):
                 show(client.place_can())
             elif cmd == 'drop':
                 show(client.drop_can())
+            elif cmd == 'grip':
+                nums = [a for a in args if a.replace('.', '', 1).isdigit()]
+                names = [a for a in args if a not in nums]
+                show(client.grip_can(float(nums[0]) if nums else 5.0,
+                                     names[0] if names else ''))
             elif cmd == 'wave':
                 show(client.wave_arm(int(args[0]) if args else 1))
             elif cmd == 'reset':
@@ -514,6 +538,12 @@ def build_parser():
     sub.add_parser('drop', help='let go where the arm is, and forget what '
                                 'was held')
 
+    grip = sub.add_parser('grip', help='hand it a can: open, wait, then grip '
+                                       'it as if picked; moves nothing')
+    grip.add_argument('--delay', type=float, default=5.0,
+                      help='seconds the jaws stay open (default %(default)s)')
+    grip.add_argument('--object', default='',
+                      help='catalogue object (default soda_can)')
     state = sub.add_parser('state', help='move to a saved state')
     state.add_argument('name')
 
@@ -585,6 +615,9 @@ def main(argv=None):
         return 0 if show(client.place_can(), cli.verbose) else 1
     if cli.cmd == 'drop':
         return 0 if show(client.drop_can(), cli.verbose) else 1
+    if cli.cmd == 'grip':
+        return 0 if show(client.grip_can(cli.delay, cli.object),
+                         cli.verbose) else 1
     if cli.cmd == 'state':
         return 0 if show(client.move_to_state(cli.name), cli.verbose) else 1
     if cli.cmd == 'reset':
