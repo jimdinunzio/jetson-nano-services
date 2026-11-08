@@ -79,7 +79,6 @@ class NanoOwl:
         # Network frame buffer (network mode only)
         self._network_frame = None
         self._network_frame_seq = None
-        self._network_frame_size = None  # (w, h), set from first pushed frame
         self._network_frame_event = threading.Event()
 
     def get_frame_source(self):
@@ -131,9 +130,6 @@ class NanoOwl:
             return False
 
         with self._lock:
-            if self._network_frame_size is None:
-                self._network_frame_size = frame.size
-                print(f"[NanoOwl] Network frame size set to {frame.size}", flush=True)
             self._network_frame = frame
             self._network_frame_seq = seq
             self._last_get_time = time.time()
@@ -313,9 +309,10 @@ class NanoOwl:
     def _get_image_size(self, frame):
         """Get (width, height) from frame, appropriate to the frame source."""
         if self._frame_source == "network":
-            with self._lock:
-                size = self._network_frame_size
-            return size if size is not None else frame.size
+            # The frame's own size, every time. Clients push different
+            # resolutions (the arm camera 640x480, others 640x352), and
+            # latching the first one clamped every later client's boxes to it.
+            return frame.size
         else:
             return self.resolution
 
