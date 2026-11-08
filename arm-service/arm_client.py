@@ -188,6 +188,16 @@ class ArmClient:
         """Move to a saved state -- see list_states()."""
         return self._call(self._motion, 'move_to_state', str(name))
 
+    def current_state(self) -> Dict[str, Any]:
+        """Which saved state the arm is in. Read `state`: the name, or None
+        when it is in none of them. `ok` False means the question could not be
+        asked (not enabled, busy mid-move), and `state` is None then too."""
+        result = self._call(self._motion, 'current_state')
+        # A call that never reached the server has no `state`; give it one,
+        # so every caller can read result['state'].
+        result.setdefault('state', None)
+        return result
+
     def reset_arm(self, state: str = '',
                   force: bool = False) -> Dict[str, Any]:
         """Recover: clear the planning scene, open the gripper, go to `state`.
@@ -296,6 +306,15 @@ def show_held(result: Dict[str, Any]) -> bool:
     return bool(result.get('ok'))
 
 
+def show_state(result: Dict[str, Any]) -> bool:
+    """Print a current_state() result: the state name, or none."""
+    if result.get('ok'):
+        print(result.get('state') or 'none (not at any saved state)')
+    else:
+        show(result)
+    return bool(result.get('ok'))
+
+
 def show_status(status: Optional[dict]):
     if status is None:
         return
@@ -340,6 +359,7 @@ INTERACTIVE_HELP = """Commands:
   wave [N]              wave hello N times, then stow
   held [object]         look: is the object still in the jaws?
   torque on|off         servo torque; off DISABLES the arm, then goes limp
+  where                 which saved state the arm is in, or none
   states                list the saved states
   status                enabled? busy? what ran last?
   log [N]               tail the launch log
@@ -374,6 +394,8 @@ def interactive(client: ArmClient):
                 print(client.ping())
             elif cmd == 'status':
                 show_status(client.get_status())
+            elif cmd == 'where':
+                show_state(client.current_state())
             elif cmd == 'states':
                 print(', '.join(client.list_states()) or '(none)')
             elif cmd == 'log':
@@ -521,6 +543,7 @@ def build_parser():
                                  'then it goes limp -- support it')
     torque.add_argument('state', choices=('on', 'off'))
 
+    sub.add_parser('where', help='which saved state the arm is in, or none')
     sub.add_parser('states', help='list the saved states')
     sub.add_parser('status', help='server and stack status')
     sub.add_parser('stop', help='abort the motion in flight')
@@ -577,6 +600,8 @@ def main(argv=None):
                          cli.verbose) else 1
     if cli.cmd == 'stop':
         return 0 if show(client.stop(), cli.verbose) else 1
+    if cli.cmd == 'where':
+        return 0 if show_state(client.current_state()) else 1
     if cli.cmd == 'states':
         states = client.list_states()
         print('\n'.join(states) if states else '(none)')

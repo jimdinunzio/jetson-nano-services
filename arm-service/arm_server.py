@@ -21,6 +21,7 @@ Commands:
   - place_can()             - place what is being carried
   - drop_can()              - let go where the arm is, and forget what was held
   - move_to_state(name)     - move to a named state ('stow', 'init', ...)
+  - current_state()         - which named state the arm is in, or None
   - reset_arm(state)        - recover: clear the scene, let go, go home
   - wave_arm(waves)         - wave hello, then stow
   - is_holding()            - look: is the object still in the jaws?
@@ -108,6 +109,11 @@ VISION_TIMEOUT = 60
 # machine-readable output -- not MoveIt's console chatter, which is handed to a
 # human unparsed and always will be.
 VERDICT_PREFIX = 'VERDICT: '
+
+# The line `move_to_state --where` answers on: `STATE: <name>` or
+# `STATE: none`. Same standing as VERDICT_PREFIX -- our own node's one
+# machine-readable line, not MoveIt's console.
+STATE_PREFIX = 'STATE: '
 
 # Seconds allowed for the jaws-open on the way out. Shorter than STATE_TIMEOUT
 # deliberately: systemd is timing that shutdown (TimeoutStopSec in the unit
@@ -1000,6 +1006,33 @@ class ArmService:
         if not result['ok']:
             look.pop('reason')
         return dict(result, **look)
+
+    def current_state(self, timeout=STATE_TIMEOUT):
+        """Which saved state the arm is in now, or None if none of them.
+
+        Runs `ros2 run dofbot_ctrl move_to_state -- --where`, which reads
+        /joint_states and matches it against the saved states to within half a
+        degree per joint. Adds `state` to the result dict: the name, or None
+        when the arm is between states or the question could not be asked --
+        `ok` tells those two apart.
+
+        Needs the arm enabled: /joint_states is published by the stack. Takes
+        the motion lock, so it comes back `busy` mid-move rather than reporting
+        a pose the arm is passing through.
+        """
+        blocked = self._require_enabled('current_state')
+        if blocked:
+            return dict(blocked, state=None)
+        args = ['ros2', 'run', 'dofbot_ctrl', 'move_to_state', '--', '--where']
+        result = self._run('current_state', args, timeout)
+        state = None
+        for line in reversed((result['output'] or '').splitlines()):
+            line = line.strip()
+            if line.startswith(STATE_PREFIX):
+                name = line[len(STATE_PREFIX):].strip()
+                state = None if name == 'none' else name
+                break
+        return dict(result, state=state)
 
     def list_states(self):
         """The saved state names, read from the node itself and cached.

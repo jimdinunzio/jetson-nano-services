@@ -32,6 +32,7 @@ nothing here touches serial.
 | `place_can()` | `ros2 run dofbot_ctrl pick_place -- --place` |
 | `drop_can()` | `ros2 run dofbot_ctrl pick_place -- --drop` |
 | `move_to_state(name)` | `ros2 run dofbot_ctrl move_to_state -- NAME` |
+| `current_state()` | `ros2 run dofbot_ctrl move_to_state -- --where`: which saved state the arm is in, as `state`, or None |
 | `reset_arm(state, force)` | `ros2 run dofbot_ctrl pick_place -- --reset STATE` |
 | `wave_arm(waves, finish, seconds)` | `ros2 run dofbot_ctrl wave_arm -- --waves N` |
 | `is_holding(object)` | `ros2 run dofbot_ctrl vision_check -- --held` |
@@ -62,6 +63,10 @@ printed nothing to go on.
           "['soda_can', 'test_block']",
  'reason': "unknown object 'soda can'; catalogue has ['soda_can', 'test_block']"}
 ```
+
+`current_state()` adds `state`: the saved state's name when every joint is
+within half a degree of it, None when the arm is in none of them. `ok` False
+(not enabled, or `busy` mid-move) also leaves `state` None, so read `ok` first.
 
 `is_holding()` adds three keys to that dict: `held` (**True / False / None**),
 `verdict` (the same three as text) and `reason`.
@@ -111,7 +116,10 @@ the error behind a failed pick is on disk there as well as in `reason`.
 python3 arm_client.py status
 python3 arm_client.py enable --floor hard       # the surface the robot is on
 python3 arm_client.py state init
-python3 arm_client.py pick 0.30 0.0 0.061
+python3 arm_client.py where                    # init, stow, ... or none
+python3 arm_client.py check 0.30 0.0 0.035      # would it plan? moves nothing
+python3 arm_client.py pick 0.30 0.0 0.035
+python3 arm_client.py pick 0.30 0.0 0.035 --approach --no-held   # pick the checks
 python3 arm_client.py place
 python3 arm_client.py drop                     # let go where the arm is
 python3 arm_client.py held                     # is the can still in the jaws?
