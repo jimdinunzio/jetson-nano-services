@@ -28,6 +28,7 @@ nothing here touches serial.
 | `enable_arm(timeout, bridge, rviz, port, floor)` | `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false`, with `DOFBOT_FLOOR` set to `floor` |
 | `disable_arm()` | opens the jaws, then stops that launch (whole process group) |
 | `pick_can(x, y, z, object, vision, approach, held)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z`, plus `--approach-check` when `approach` is True, `--no-held-check` when `held` is False, `--no-vision` when `vision` is False |
+| `can_pick(x, y, z, object)` | `ros2 run dofbot_ctrl pick_place -- --check x y z`: would that pick plan? Moves nothing |
 | `place_can()` | `ros2 run dofbot_ctrl pick_place -- --place` |
 | `drop_can()` | `ros2 run dofbot_ctrl pick_place -- --drop` |
 | `move_to_state(name)` | `ros2 run dofbot_ctrl move_to_state -- NAME` |
@@ -125,8 +126,10 @@ From code:
 ```python
 from arm_client import ArmClient
 arm = ArmClient('http://192.168.55.1:8001/')
-arm.enable_arm()
-if arm.pick_can(0.30, 0.0, 0.039)['ok']:
+arm.enable_arm(floor='hard')
+if not arm.can_pick(0.30, 0.0, 0.035)['ok']:
+    ...                                  # nudge the base, then ask again
+elif arm.pick_can(0.30, 0.0, 0.035)['ok']:
     arm.place_can()
 ```
 
@@ -182,6 +185,14 @@ under *Things worth knowing*), and every hard-floor pick failed the same way at
 any distance. With the floor set right, 0.335 m at 8° picks, and so do
 0.20–0.22 straight ahead. The band above has not been re-swept on hard floor;
 it was never what failed.
+
+**Check before committing.** `can_pick(x, y, z)` runs the pick's own approach
+search and collision checks against the live scene and moves nothing. When it
+says no, `reason` says which way: *move the base closer* past the far edge,
+*move the base FURTHER AWAY* at the near one. It does not check the vision steps
+or the moves after the grasp (a wrong floor still gets past it), refuses while
+something is held, and comes back `busy` during a pick.
+
 **These numbers are for the EXTENDED fingers.** They move the whole working ring
 outward. On the stock jaws with the 30 mm test block the same sweep gives a band
 of 0.13–0.31 and a sweet spot of 0.20–0.29 — different constants entirely, so

@@ -155,6 +155,14 @@ class ArmClient:
                           float(z), object, bool(vision), bool(approach),
                           bool(held))
 
+    def can_pick(self, x: float, y: float, z: float,
+                 object: str = '') -> Dict[str, Any]:
+        """Would pick_can(x, y, z) plan? Moves nothing. `ok` is the answer,
+        `reason` says why not -- which stage ran out, so which way to nudge
+        the base."""
+        return self._call(self._motion, 'can_pick', float(x), float(y),
+                          float(z), object)
+
     def place_can(self) -> Dict[str, Any]:
         """Place whatever the gripper is carrying."""
         return self._call(self._motion, 'place_can')
@@ -323,6 +331,7 @@ INTERACTIVE_HELP = """Commands:
                         pick the object centred at X Y Z and carry it
                         (no-vision: skip both camera checks; approach: turn
                         on the approach check; no-held: skip the held one)
+  check X Y Z [object]  would that pick plan? Moves nothing
   place                 place what the gripper is carrying
   drop                  let go where the arm is, and forget what was held
   state NAME            move to a saved state
@@ -401,6 +410,14 @@ def interactive(client: ArmClient):
                           % ', '.join(client.list_states()))
                 else:
                     show(client.move_to_state(args[0]))
+            elif cmd == 'check':
+                if len(args) not in (3, 4):
+                    print('Usage: check X Y Z [object]   '
+                          '(metres, base_link, object CENTRE)')
+                else:
+                    show(client.can_pick(float(args[0]), float(args[1]),
+                                         float(args[2]),
+                                         args[3] if len(args) > 3 else ''))
             elif cmd == 'pick':
                 flags = ('no-vision', 'approach', 'no-held')
                 rest = [a for a in args[3:] if a not in flags]
@@ -463,6 +480,13 @@ def build_parser():
                            'the open jaws before closing (off by default)')
     pick.add_argument('--no-held', dest='held', action='store_false',
                       help='skip the held check at stow (on by default)')
+
+    check = sub.add_parser('check', help='would a pick there plan? moves '
+                                         'nothing')
+    check.add_argument('x', type=float, help='object CENTRE x in base_link, m')
+    check.add_argument('y', type=float)
+    check.add_argument('z', type=float)
+    check.add_argument('--object', default='', help='catalogue entry')
 
     sub.add_parser('place', help='place what the gripper is carrying')
     sub.add_parser('drop', help='let go where the arm is, and forget what '
@@ -530,6 +554,9 @@ def main(argv=None):
     if cli.cmd == 'pick':
         return 0 if show(client.pick_can(cli.x, cli.y, cli.z, cli.object,
                                          cli.vision, cli.approach, cli.held),
+                         cli.verbose) else 1
+    if cli.cmd == 'check':
+        return 0 if show(client.can_pick(cli.x, cli.y, cli.z, cli.object),
                          cli.verbose) else 1
     if cli.cmd == 'place':
         return 0 if show(client.place_can(), cli.verbose) else 1

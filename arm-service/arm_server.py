@@ -17,6 +17,7 @@ Commands:
   - enable_arm()            - start the pick_place stack (move_group + bridge)
   - disable_arm()           - open the jaws, then shut that stack down
   - pick_can(x, y, z)       - pick the object at x,y,z and carry it
+  - can_pick(x, y, z)       - would that pick plan? Moves nothing
   - place_can()             - place what is being carried
   - drop_can()              - let go where the arm is, and forget what was held
   - move_to_state(name)     - move to a named state ('stow', 'init', ...)
@@ -89,6 +90,9 @@ MOVE_ACTION = '/move_action'
 # holding the motion lock forever, not to bound normal operation.
 ENABLE_TIMEOUT = 90
 PICK_TIMEOUT = 240
+# A dry run is one IK sweep and a few state-validity calls; nearly all of it is
+# `ros2 run` starting Python.
+CHECK_TIMEOUT = 60
 PLACE_TIMEOUT = 240
 STATE_TIMEOUT = 120
 RESET_TIMEOUT = 120
@@ -786,6 +790,29 @@ class ArmService:
             args += ['--no-held-check']
         args += ['%g' % float(x), '%g' % float(y), '%g' % float(z)]
         return self._run('pick_can', args, timeout)
+
+    def can_pick(self, x, y, z, object='', timeout=CHECK_TIMEOUT):
+        """Would pick_can(x, y, z) plan? Moves nothing, leaves nothing.
+
+        Runs `ros2 run dofbot_ctrl pick_place -- --check x y z`: the same
+        approach search and collision checks a pick makes, against the live
+        planning scene, with the object taken back out afterwards. `ok` is the
+        answer; when it is False, `reason` says which stage ran out (too far,
+        too close, a collision) -- which is the hint for which way to nudge the
+        base.
+
+        It does NOT check the vision steps or the moves after the grasp, and it
+        refuses while something is held: a real pick would drop that first.
+        Takes the motion lock, so it comes back `busy` during a pick.
+        """
+        blocked = self._require_enabled('can_pick')
+        if blocked:
+            return blocked
+        args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--check']
+        if object:
+            args += ['--object', str(object)]
+        args += ['%g' % float(x), '%g' % float(y), '%g' % float(z)]
+        return self._run('can_pick', args, timeout)
 
     def place_can(self, timeout=PLACE_TIMEOUT):
         """Place whatever the gripper is carrying.
