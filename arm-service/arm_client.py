@@ -125,13 +125,14 @@ class ArmClient:
 
     def enable_arm(self, timeout: int = 90, bridge: bool = True,
                    rviz: bool = False, port: str = '',
-                   floor: str = '') -> Dict[str, Any]:
+                   floor: str = '', check_jaws: bool = True) -> Dict[str, Any]:
         """Start the ROS stack. Blocks until the nodes are up or it gives up.
 
         floor is 'carpet' or 'hard', the surface the robot stands on; '' takes
-        the server's default. Fixed until disable_arm()."""
+        the server's default. Fixed until disable_arm(). check_jaws exercises
+        the empty jaws first and refuses the enable if they do not follow."""
         return self._call(self._motion, 'enable_arm', timeout, bridge, rviz,
-                          port, floor)
+                          port, floor, check_jaws)
 
     def disable_arm(self, park: str = '') -> Dict[str, Any]:
         """Open the jaws, optionally move to `park`, then stop the ROS stack.
@@ -358,9 +359,10 @@ def show_status(status: Optional[dict]):
 
 
 INTERACTIVE_HELP = """Commands:
-  enable [--sim] [carpet|hard]
+  enable [--sim] [--no-jaw-check] [carpet|hard]
                         start the ROS stack (--sim: no servo bridge; the
-                        floor defaults to the server's)
+                        floor defaults to the server's); first checks the
+                        empty jaws open and close
   disable [state]       open the jaws, park at state (default stow), and
                         stop the stack
   pick X Y Z [object] [no-vision] [approach] [no-held]
@@ -433,7 +435,8 @@ def interactive(client: ArmClient):
                 print('Starting the stack, this takes a few seconds...')
                 floor = [a for a in args if a in ('carpet', 'hard')]
                 show(client.enable_arm(bridge='--sim' not in args,
-                                       floor=floor[0] if floor else ''))
+                                       floor=floor[0] if floor else '',
+                                       check_jaws='--no-jaw-check' not in args))
             elif cmd == 'disable':
                 show(client.disable_arm(args[0] if args else 'stow'))
             elif cmd == 'place':
@@ -507,6 +510,8 @@ def build_parser():
     enable.add_argument('--floor', choices=('carpet', 'hard'), default='',
                         help="surface the robot stands on (default: the "
                              "server's DOFBOT_FLOOR)")
+    enable.add_argument('--no-jaw-check', action='store_true',
+                        help='skip exercising the empty jaws before the launch')
     enable.add_argument('--timeout', type=int, default=90)
 
     disable = sub.add_parser('disable', help='stop the ROS stack')
@@ -600,7 +605,8 @@ def main(argv=None):
     if cli.cmd == 'enable':
         return 0 if show(client.enable_arm(timeout=cli.timeout,
                                            bridge=not cli.sim,
-                                           rviz=cli.rviz, floor=cli.floor),
+                                           rviz=cli.rviz, floor=cli.floor,
+                                           check_jaws=not cli.no_jaw_check),
                          cli.verbose) else 1
     if cli.cmd == 'disable':
         return 0 if show(client.disable_arm(cli.park), cli.verbose) else 1

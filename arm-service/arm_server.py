@@ -115,12 +115,21 @@ VERDICT_PREFIX = 'VERDICT: '
 # machine-readable line, not MoveIt's console.
 STATE_PREFIX = 'STATE: '
 
+# The line `check_jaws` answers on: `JAWS: ok`, `JAWS: ok after a torque
+# cycle (...)`, `JAWS: stuck -- ...` or `JAWS: no reply ...`. Same standing as
+# VERDICT_PREFIX.
+JAWS_PREFIX = 'JAWS: '
+
 # Seconds allowed for the jaws-open on the way out. Shorter than STATE_TIMEOUT
 # deliberately: systemd is timing that shutdown (TimeoutStopSec in the unit
 # file), and a gripper that has not answered in this long is not going to
 # before the launch has to come down anyway. A release that actually works is
 # one `ros2 run` startup plus one servo command -- a few seconds.
 RELEASE_TIMEOUT = 8
+
+# enable_arm()'s jaw check: open, close, open, twice over if the first try
+# needs a torque cycle -- about 5 s of servo time plus a `ros2 run` startup.
+JAWS_TIMEOUT = 45
 
 # Where reset_arm() leaves the arm unless told otherwise: 'stow', the pose the
 # robot drives in, clear of the lidar. 'init' is only for the OAK-D's last look
@@ -250,6 +259,15 @@ def _result(ok, command='', returncode=-1, output='', error='', seconds=0.0):
         'reason': reason,
         'seconds': round(float(seconds), 2),
     }
+
+
+def _jaws_line(output):
+    """check_jaws's answer, without the prefix, or '' if it never gave one."""
+    for line in reversed(_printable(output or '').splitlines()):
+        line = line.strip()
+        if line.startswith(JAWS_PREFIX):
+            return line[len(JAWS_PREFIX):]
+    return ''
 
 
 def _verdict(output):
@@ -576,7 +594,7 @@ class ArmService:
     # --------------------------------------------------------------- commands
 
     def enable_arm(self, timeout=ENABLE_TIMEOUT, bridge=True, rviz=False,
-                   port='', floor=''):
+                   port='', floor='', check_jaws=True):
         """Start the pick_place stack and wait for it to come up.
 
         Runs `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false`, which
@@ -595,6 +613,12 @@ class ArmService:
                      DOFBOT_FLOOR, else hard. Wrong here, every pick fails
                      once the can is lifted: a hard-floor can is 4 mm inside a
                      carpet floor. Fixed until disable_arm().
+            check_jaws: before the launch, open, close and open the EMPTY
+                     jaws and read the gripper servo back (`check_jaws`). A
+                     jaw that does not follow gets a torque cycle and one
+                     retry; if that fails too the enable is refused, since
+                     every grip would fail. Only with bridge -- simulation
+                     has no servo to check.
 
         Returns a result dict. Enabling twice is not an error; the second call
         reports the stack that is already up.
@@ -626,6 +650,24 @@ class ArmService:
                                % (self._launch.pid,
                                   time.time() - self._launch_started,
                                   self._floor))
+            # Before the launch, because check_jaws needs the serial port and
+            # the bridge takes it for as long as the stack is up.
+            jaws = ''
+            if bridge and check_jaws:
+                jaw_args = ['ros2', 'run', 'dofbot_ctrl', 'check_jaws']
+                if port:
+                    jaw_args += ['--', '--port', port]
+                checked = self._run('check_jaws', jaw_args, JAWS_TIMEOUT)
+                jaws = _jaws_line(checked['output'])
+                if not checked['ok']:
+                    result = _result(False, 'enable_arm',
+                                     checked['returncode'], checked['output'],
+                                     seconds=checked['seconds'])
+                    # Set after, not passed in: _result would append the
+                    # JAWS line it finds in the output to what already says it.
+                    result['error'] = ('jaw check failed: %s'
+                                       % (jaws or checked['error']))
+                    return result
             args = ['ros2', 'launch', 'dofbot_ctrl', 'pick_place.launch.py',
                     'rviz:=%s' % _b(rviz), 'bridge:=%s' % _b(bridge)]
             if port:
@@ -669,7 +711,10 @@ class ArmService:
                            output=self.tail_log(40),
                            seconds=time.time() - started)
         return _result(True, 'enable_arm', 0,
-                       '%s; %s floor; %s' % (detail, floor, self._warm_owl()),
+                       '%s; %s floor; %s%s'
+                       % (detail, floor,
+                          'jaws %s; ' % jaws if jaws else '',
+                          self._warm_owl()),
                        seconds=time.time() - started)
 
     def _warm_owl(self):

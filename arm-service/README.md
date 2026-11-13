@@ -25,7 +25,7 @@ nothing here touches serial.
 
 | method | what it runs |
 |---|---|
-| `enable_arm(timeout, bridge, rviz, port, floor)` | `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false`, with `DOFBOT_FLOOR` set to `floor` |
+| `enable_arm(timeout, bridge, rviz, port, floor, check_jaws)` | `ros2 run dofbot_ctrl check_jaws`, then `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false`, with `DOFBOT_FLOOR` set to `floor` |
 | `disable_arm()` | opens the jaws, then stops that launch (whole process group) |
 | `pick_can(x, y, z, object, vision, approach, held)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z`, plus `--approach-check` when `approach` is True, `--no-held-check` when `held` is False, `--no-vision` when `vision` is False |
 | `can_pick(x, y, z, object)` | `ros2 run dofbot_ctrl pick_place -- --check x y z`: would that pick plan? Moves nothing |
@@ -234,6 +234,14 @@ anything that hard-codes the values above has to read `DOFBOT_GRIPPER` the way
   the arm settles wherever the waypoint already in flight leaves it.
 - **`moveit_bridge` needs `/dev/ttyTHS1` to itself.** Stop `gui_teleop` and
   `joint_state_mirror` before `enable_arm()`.
+- **`enable_arm()` checks the jaws first.** With the bridge on, it opens,
+  closes and opens the empty jaws and reads the gripper servo back. A jaw that
+  does not follow gets a torque cycle and one retry, and if it still does not
+  follow, the enable is refused with `jaw check failed: ...`. The fix is then
+  `torque off`, work the jaws by hand, enable again. `check_jaws=False`
+  (`enable --no-jaw-check`) skips it. The check opens the jaws first, so
+  anything left in them is dropped where the arm stands -- as the launch's own
+  first sync would do anyway.
 - **A failed `enable_arm()` tears its own launch down.** A leftover half-stack
   would put a second `move_group` on the domain at the next attempt, and two
   action servers driving one arm is a far worse failure than a clean retry.
