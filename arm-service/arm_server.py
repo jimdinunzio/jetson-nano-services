@@ -29,9 +29,9 @@ Commands:
   - set_torque(on)          - servo torque; OFF DISABLES THE ARM first
 plus list_states(), stop(), tail_log(), get_status() and ping().
 
-is_holding() and held_color() are the odd ones out: they need no move_group, only the wrist camera
-and the nanoOWL detector beside it, so it answers whether or not the arm is
-enabled.
+is_holding() and held_color() are the odd ones out: they need no move_group,
+only the wrist camera and the nanoOWL detector beside it, so they answer
+whether or not the arm is enabled.
 
 The arm must be enabled before any motion command; the motion commands are
 serialized, and a second one arrives back as busy rather than queueing.
