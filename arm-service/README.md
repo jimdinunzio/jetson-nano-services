@@ -37,6 +37,7 @@ nothing here touches serial.
 | `reset_arm(state, force)` | `ros2 run dofbot_ctrl pick_place -- --reset STATE` |
 | `wave_arm(waves, finish, seconds)` | `ros2 run dofbot_ctrl wave_arm -- --waves N` |
 | `is_holding(object)` | `ros2 run dofbot_ctrl vision_check -- --held` |
+| `held_color(object)` | `ros2 run dofbot_ctrl vision_check -- --color` |
 | `set_torque(on)` | off: `disable_arm()` first, then `ros2 run dofbot_ctrl set_torque off`. on: `ros2 run dofbot_ctrl set_torque on` (nothing to do while enabled) |
 
 Plus `list_states()`, `stop()`, `tail_log()`, `get_status()`, `ping()`.
@@ -71,6 +72,10 @@ within half a degree of it, None when the arm is in none of them. `ok` False
 
 `is_holding()` adds three keys to that dict: `held` (**True / False / None**),
 `verdict` (the same three as text) and `reason`.
+
+`held_color()` adds those and `color`: `'red'`, `'green'`, `'blue'` or None.
+When None, `held` says why: False empty jaws, True held but the colour was not
+clear, None the camera could not answer.
 
 ## Running it
 

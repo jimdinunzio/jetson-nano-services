@@ -25,10 +25,11 @@ Commands:
   - reset_arm(state)        - recover: clear the scene, let go, go home
   - wave_arm(waves)         - wave hello, then stow
   - is_holding()            - look: is the object still in the jaws?
+  - held_color()            - look: is the held can red, green or blue?
   - set_torque(on)          - servo torque; OFF DISABLES THE ARM first
 plus list_states(), stop(), tail_log(), get_status() and ping().
 
-is_holding() is the odd one out: it needs no move_group, only the wrist camera
+is_holding() and held_color() are the odd ones out: they need no move_group, only the wrist camera
 and the nanoOWL detector beside it, so it answers whether or not the arm is
 enabled.
 
@@ -1081,6 +1082,44 @@ class ArmService:
         # Both halves call their explanation `reason`. When the look happened
         # the camera's is the one the caller asked for; when the command failed
         # there was no look to explain, so the failure keeps the field.
+        if not result['ok']:
+            look.pop('reason')
+        return dict(result, **look)
+
+    def held_color(self, object='', timeout=VISION_TIMEOUT):
+        """Which colour is the can in the jaws: 'red', 'green' or 'blue'?
+
+        Runs `ros2 run dofbot_ctrl vision_check -- --color`: ONE frame from the
+        wrist camera, put first to the held check and then, only if a can is
+        held, to a three-way colour classification of the same crop. A
+        classification always names a winner, so asking the colour of empty
+        jaws would answer with a colour; the held check is what stops that.
+
+        Read `color`: one of the three, or None. None comes with `held` to say
+        why -- False the jaws are empty, True a can is held but its colour did
+        not clear the confidence floor (a can of some other colour lands here
+        or, at worst, as its nearest of the three), None the camera or nanoOWL
+        could not answer. `verdict` and `reason` are as is_holding()'s.
+
+        Meaningful at 'stow', for the same reason as is_holding(), and takes
+        the motion lock like it.
+
+        Args:
+            object:  catalogue entry; '' means the node's default.
+            timeout: seconds before the command is killed.
+        """
+        args = ['ros2', 'run', 'dofbot_ctrl', 'vision_check', '--', '--color']
+        if object:
+            args += ['--object', str(object)]
+        result = self._run('held_color', args, timeout)
+        look = _verdict(result['output'])
+        sighting = look['sighting']
+        color = sighting.get('color')
+        look['color'] = str(color) if color else None
+        # `seen` says the held check saw a can even when the colour verdict is
+        # unknown; without it a held can of unsure colour reads as held None.
+        if sighting.get('seen'):
+            look['held'] = True
         if not result['ok']:
             look.pop('reason')
         return dict(result, **look)

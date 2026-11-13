@@ -202,6 +202,17 @@ class ArmClient:
         """
         return self._call(self._motion, 'is_holding', object)
 
+    def held_color(self, object: str = '') -> Dict[str, Any]:
+        """Look through the wrist camera: is the held can red, green or blue?
+
+        Read `color`: 'red', 'green', 'blue', or None. When None, `held` says
+        why -- False empty jaws, True held but the colour was not clear, None
+        the camera could not answer. Means what it says at 'stow'.
+        """
+        result = self._call(self._motion, 'held_color', object)
+        result.setdefault('color', None)
+        return result
+
     def move_to_state(self, name: str) -> Dict[str, Any]:
         """Move to a saved state -- see list_states()."""
         return self._call(self._motion, 'move_to_state', str(name))
@@ -324,6 +335,18 @@ def show_held(result: Dict[str, Any]) -> bool:
     return bool(result.get('ok'))
 
 
+def show_color(result: Dict[str, Any]) -> bool:
+    """Print a held_color() result: the colour, or why there is none."""
+    color = result.get('color')
+    held = result.get('held')
+    word = (color.upper() if color else
+            {True: 'UNSURE', False: 'EMPTY'}.get(held, 'UNKNOWN'))
+    print('%-8s %s' % (word, result.get('reason') or result.get('error') or ''))
+    if held is None and not result.get('ok'):
+        show(result)
+    return bool(result.get('ok'))
+
+
 def show_state(result: Dict[str, Any]) -> bool:
     """Print a current_state() result: the state name, or none."""
     if result.get('ok'):
@@ -379,6 +402,7 @@ INTERACTIVE_HELP = """Commands:
                         retried pick resets itself)
   wave [N]              wave hello N times, then stow
   held [object]         look: is the object still in the jaws?
+  color [object]        look: is the held can red, green or blue?
   torque on|off         servo torque; off DISABLES the arm, then goes limp
   where                 which saved state the arm is in, or none
   states                list the saved states
@@ -425,6 +449,8 @@ def interactive(client: ArmClient):
                 show(client.stop())
             elif cmd == 'held':
                 show_held(client.is_holding(args[0] if args else ''))
+            elif cmd == 'color':
+                show_color(client.held_color(args[0] if args else ''))
             elif cmd == 'torque':
                 if args not in (['on'], ['off']):
                     print('Usage: torque on|off   (off disables the arm, '
@@ -573,6 +599,11 @@ def build_parser():
     held.add_argument('object', nargs='?', default='',
                       help='catalogue entry to look for')
 
+    color = sub.add_parser('color',
+                           help='look: is the held can red, green or blue?')
+    color.add_argument('object', nargs='?', default='',
+                       help='catalogue entry to look for')
+
     torque = sub.add_parser('torque',
                             help='servo torque; off DISABLES the arm first, '
                                  'then it goes limp -- support it')
@@ -634,6 +665,8 @@ def main(argv=None):
                          cli.verbose) else 1
     if cli.cmd == 'held':
         return 0 if show_held(client.is_holding(cli.object)) else 1
+    if cli.cmd == 'color':
+        return 0 if show_color(client.held_color(cli.object)) else 1
     if cli.cmd == 'torque':
         return 0 if show(client.set_torque(cli.state == 'on'),
                          cli.verbose) else 1
