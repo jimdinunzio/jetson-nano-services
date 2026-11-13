@@ -265,8 +265,30 @@ class NanoOwl:
         Each TreeDetection has: box, id, labels, parent_id, scores.
         """
         w, h = image_size
+        detections = list(tree_output.detections)
+
+        def as_list(v):
+            if hasattr(v, 'tolist'):
+                return v.tolist()
+            return v if isinstance(v, list) else list(v)
+
+        # det.id and det.parent_id are INSTANCE ids -- a running count of
+        # boxes in this frame (0 is the whole image) -- not label indices.
+        # The label is in det.labels: the tree buffers the instance landed
+        # in, root first, so the last is the most specific. Indexing
+        # tree.labels by det.id named boxes by their position in the list,
+        # which swapped and blanked labels as soon as a frame held a box
+        # more than the tree had labels for.
+        label_of = {}
+        for det in detections:
+            labels = as_list(det.labels)
+            label_of[int(det.id)] = int(labels[-1]) if labels else -1
+
+        def name(index):
+            return tree.labels[index] if 0 <= index < len(tree.labels) else ""
+
         results = []
-        for det in tree_output.detections:
+        for det in detections:
             box = det.box
             if hasattr(box, 'tolist'):
                 box = box.tolist()
@@ -292,13 +314,14 @@ class NanoOwl:
             elif not isinstance(labels, list):
                 labels = list(labels)
 
-            label_id = int(det.id) if det.id is not None else -1
-            parent_id = int(det.parent_id) if det.parent_id is not None else -1
+            label_id = label_of.get(int(det.id), -1)
+            parent_id = (label_of.get(int(det.parent_id), -1)
+                         if det.parent_id is not None else -1)
 
             results.append({
-                "label": tree.labels[label_id] if 0 <= label_id < len(tree.labels) else "",
+                "label": name(label_id),
                 "label_id": label_id,
-                "parent_label": tree.labels[parent_id] if 0 <= parent_id < len(tree.labels) else "",
+                "parent_label": name(parent_id),
                 "parent_id": parent_id,
                 "box": box,
                 "scores": scores,
