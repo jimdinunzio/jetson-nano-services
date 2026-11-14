@@ -10,9 +10,15 @@ workspace, and every file named here without a path is in it —
 workspace from outside it: `DOFBOT_WS` says where it is, defaulting to
 `~/ros2_ws`, and `start_arm_server.sh` sources it.
 
-This service imports no rclpy and is not a ROS package. It is a supervisor: one
-long-lived `ros2 launch` it keeps alive, one short-lived `ros2 run` per motion
-command. Everything that is hard (planning, IK, the planning scene, the gripper
+This service imports no rclpy and is not a ROS package. It is a supervisor.
+While the arm is enabled it keeps two processes alive: the `ros2 launch`, and
+`arm_worker`, which runs each command in the table below inside one process
+that has already found `move_group` — a command starts moving the arm in a few
+tenths of a second. With the arm disabled, or if the worker dies, a command is
+its own short-lived process, exactly as the table writes it, and spends about
+four seconds starting up first. `stop()` and a timeout end the worker along
+with the command; another is started in the background. Everything that is
+hard (planning, IK, the planning scene, the gripper
 model) stays in `dofbot_ctrl`, where the tests are.
 
 **It drives the servos through ROS, not over serial.** The version of this

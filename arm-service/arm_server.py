@@ -7,11 +7,14 @@ Exposes the dofbot_ros2 stack over XML-RPC so a remote client -- typically the
 robot's higher-level brain on another machine -- can enable the arm and run
 pick/place without knowing anything about ROS.
 
-Every command is a `ros2` CLI invocation, deliberately: the ROS entry points in
-dofbot_ctrl already own the hard parts (planning, IK, the planning scene), and
-shelling out to them keeps this server a thin, restartable supervisor with no
-rclpy state of its own to get out of sync. It runs in ONE ros2 process it keeps
-alive (the launch), plus one short-lived process per motion command.
+Every command is one of dofbot_ctrl's own entry points, deliberately: they
+already own the hard parts (planning, IK, the planning scene), and handing
+commands to them keeps this server a thin, restartable supervisor with no
+rclpy state of its own to get out of sync. While the arm is enabled it keeps
+TWO processes alive: the launch, and arm_worker, which runs the commands one
+after another on a ROS context that has already found move_group. With the arm
+disabled, or the worker gone, a command is its own short-lived process, which
+costs it about four seconds of start-up before anything moves -- see Worker.
 
 Commands:
   - enable_arm()            - start the pick_place stack (move_group + bridge)
@@ -46,12 +49,14 @@ import json
 import os
 import re
 import shlex
+import queue
 import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from socketserver import ThreadingMixIn
 from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 
@@ -131,6 +136,21 @@ RELEASE_TIMEOUT = 8
 # enable_arm()'s jaw check: open, close, open, twice over if the first try
 # needs a torque cycle -- about 5 s of servo time plus a `ros2 run` startup.
 JAWS_TIMEOUT = 45
+
+# The package every command here belongs to.
+PACKAGE = 'dofbot_ctrl'
+
+# The executables arm_worker can run in-process, and the two lines it speaks
+# on. All three mirror dofbot_ctrl/arm_worker.py, the other end of that pipe.
+WORKER = 'arm_worker'
+WORKER_COMMANDS = ('pick_place', 'move_to_state', 'wave_arm', 'vision_check')
+WORKER_READY = 'ARM_WORKER_READY'
+WORKER_DONE = 'ARM_WORKER_DONE '
+
+# Seconds for the worker to import, join the graph and find move_group: about
+# 1.5 s with the stack already up. Past this the arm is enabled without one
+# and each command runs as its own process, slower and no less correct.
+WORKER_TIMEOUT = 30
 
 # Where reset_arm() leaves the arm unless told otherwise: 'stow', the pose the
 # robot drives in, clear of the lidar. 'init' is only for the OAK-D's last look
@@ -401,6 +421,21 @@ class RosRunner:
         # a real argv and never go back through the shell's word splitting.
         return ['bash', '-c', script + 'exec "$@"', 'dofbot-arm'] + args
 
+    def node_argv(self, args):
+        """argv for one of dofbot_ctrl's executables: args[0] names it.
+
+        The executable itself when the workspace has it where colcon puts it,
+        because `ros2 run` is a Python program that takes 0.45 s to find and
+        exec the same file. `ros2 run` when it is not there, so a layout this
+        does not know still works.
+        """
+        name, rest = str(args[0]), list(args[1:])
+        for path in (os.path.join(self.install, PACKAGE, 'lib', PACKAGE, name),
+                     os.path.join(self.install, 'lib', PACKAGE, name)):
+            if os.access(path, os.X_OK):
+                return self.argv([path] + rest)
+        return self.argv(['ros2', 'run', PACKAGE, name, '--'] + rest)
+
     def describe(self):
         return {
             'workspace': self.workspace,
@@ -410,8 +445,118 @@ class RosRunner:
         }
 
 
+class Worker:
+    """arm_worker: one process that runs the arm's commands back to back.
+
+    WHY. A command run as its own process spends 3.5-4.5 s before the arm is
+    asked to do anything -- interpreter, imports, and above all a new DDS
+    participant finding move_group -- and planning the move then takes 0.3 s.
+    The worker pays that once, when the arm is enabled.
+
+    It is driven over its stdin and stdout: a JSON request per line in, the
+    command's output and a closing line out. See dofbot_ctrl/arm_worker.py.
+
+    ABORTING A COMMAND KILLS THE WORKER, by design: SIGINT is what unwinds a
+    command, and it takes the ROS context with it. The caller starts another.
+    """
+
+    def __init__(self, argv):
+        self.proc = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1,
+            start_new_session=True,
+            env=dict(os.environ, PYTHONUNBUFFERED='1'))
+        self.ready = False
+        # Lines as they arrive, then None once the pipe closes. A thread
+        # because a pipe read cannot be given a deadline and a command can.
+        self._lines = queue.Queue()
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
+        try:
+            for line in self.proc.stdout:
+                self._lines.put(line)
+        except (OSError, ValueError):
+            pass
+        self._lines.put(None)
+
+    def alive(self):
+        return self.ready and self.proc.poll() is None
+
+    def wait_ready(self, timeout=WORKER_TIMEOUT):
+        """Block until the worker says it is ready. Returns '' or why not."""
+        said = []
+        deadline = time.time() + timeout
+        while True:
+            try:
+                line = self._lines.get(timeout=max(0.0, deadline - time.time()))
+            except queue.Empty:
+                return 'not ready after %.0fs' % timeout
+            if line is None:
+                return ('exited before it was ready: %s'
+                        % (_failure_reason(''.join(said)) or 'no output'))
+            if line.strip() == WORKER_READY:
+                self.ready = True
+                return ''
+            said.append(line)
+
+    def run(self, args, timeout):
+        """Run one command. Returns (status, output, timed_out).
+
+        `status` is the command's exit status, or None when the worker went
+        away before giving one -- killed by stop(), by the timeout, or dead.
+        """
+        # Anything said between commands belongs to none of them.
+        while True:
+            try:
+                if self._lines.get_nowait() is None:
+                    return None, '', False
+            except queue.Empty:
+                break
+        token = uuid.uuid4().hex
+        done = WORKER_DONE + token + ' '
+        try:
+            self.proc.stdin.write(json.dumps({'id': token, 'argv': args})
+                                  + '\n')
+            self.proc.stdin.flush()
+        except (OSError, ValueError):
+            return None, '', False
+        output = []
+        deadline = time.time() + timeout
+        while True:
+            try:
+                line = self._lines.get(timeout=max(0.0, deadline - time.time()))
+            except queue.Empty:
+                self.kill()
+                return None, ''.join(output + self._drain()), True
+            if line is None:
+                return None, ''.join(output), False
+            if line.startswith(done):
+                try:
+                    return int(line[len(done):]), ''.join(output), False
+                except ValueError:
+                    return 1, ''.join(output), False
+            output.append(line)
+
+    def _drain(self, wait=2.0):
+        """What a killed worker still had to say."""
+        lines = []
+        while True:
+            try:
+                line = self._lines.get(timeout=wait)
+            except queue.Empty:
+                return lines
+            if line is None:
+                return lines
+            if not line.startswith(WORKER_DONE):
+                lines.append(line)
+
+    def kill(self, grace=8.0):
+        return _kill_group(self.proc, grace=grace)
+
+
 class ArmService:
-    """The XML-RPC surface. Owns the launch process and the motion lock."""
+    """The XML-RPC surface. Owns the launch, the worker and the motion lock."""
 
     def __init__(self, runner, launch_log=DEFAULT_LAUNCH_LOG):
         self._runner = runner
@@ -422,6 +567,11 @@ class ArmService:
         self._floor = ''
         self._launch_fh = None
         self._launch_lock = threading.Lock()
+        # The worker, or None. _worker_wanted is what a start that finishes
+        # late checks, so a disable that overtook it is not undone by it.
+        self._worker = None
+        self._worker_wanted = False
+        self._worker_lock = threading.Lock()
         # Non-reentrant and never blocked on: a motion request that arrives
         # while another is running is answered 'busy', because a queued arm
         # command executes against a world that has moved on since it was sent.
@@ -436,8 +586,53 @@ class ArmService:
     def _launch_alive(self):
         return self._launch is not None and self._launch.poll() is None
 
+    def _start_worker(self):
+        """Start arm_worker and wait for it. Returns a line for the log.
+
+        Never fails the caller: without a worker every command still runs, as
+        its own process.
+        """
+        try:
+            worker = Worker(self._runner.node_argv([WORKER]))
+        except OSError as exc:
+            return 'no worker (%s); commands run one process each' % exc
+        why = worker.wait_ready()
+        with self._worker_lock:
+            if not why and self._worker_wanted and self._launch_alive():
+                self._worker, worker = worker, None
+        if worker is not None:
+            worker.kill(grace=3.0)
+            return ('no worker (%s); commands run one process each'
+                    % (why or 'the arm was disabled meanwhile'))
+        return 'worker ready'
+
+    def _stop_worker(self):
+        with self._worker_lock:
+            self._worker_wanted = False
+            worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.kill(grace=3.0)
+
+    def _replace_worker(self, dead):
+        """After a command took the worker down with it: start another, in
+        the background, so the result of that command is not kept waiting."""
+        with self._worker_lock:
+            if self._worker is not dead:
+                return
+            self._worker = None
+            if not self._worker_wanted:
+                return
+        threading.Thread(
+            target=lambda: print('[worker] %s' % self._start_worker(),
+                                 flush=True),
+            daemon=True).start()
+
     def _run(self, command, args, timeout):
-        """Run one short-lived ros2 command under the motion lock."""
+        """Run one dofbot_ctrl command under the motion lock.
+
+        `args[0]` is the executable. In the worker when there is one and it
+        can run that executable; as a process of its own otherwise.
+        """
         if not self._motion.acquire(blocking=False):
             running = self._task
             busy = ('busy: %s has been running for %.0fs'
@@ -446,37 +641,27 @@ class ArmService:
             return _result(False, command, error=busy)
         started = time.time()
         try:
-            argv = self._runner.argv(args)
-            print('[%s] %s' % (command, ' '.join(shlex.quote(a) for a in argv)),
-                  flush=True)
-            proc = subprocess.Popen(
-                argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, start_new_session=True)
-            self._task = {'name': command, 'pid': proc.pid, 'started': started,
-                          'proc': proc}
-            timed_out = False
-            try:
-                output = proc.communicate(timeout=timeout)[0]
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                _kill_group(proc)
-                try:
-                    output = proc.communicate(timeout=10)[0]
-                except subprocess.TimeoutExpired:
-                    # A surviving grandchild still holds the pipe. The command
-                    # is dead either way; report it without hanging the caller.
-                    output = '(output unavailable: the pipe stayed open)'
+            worker = self._worker
+            if (worker is not None and worker.alive()
+                    and args[0] in WORKER_COMMANDS and self._launch_alive()):
+                code, output, timed_out = self._run_in_worker(
+                    worker, command, args, timeout, started)
+            else:
+                if worker is not None and worker.proc.poll() is not None:
+                    # It died between commands. This one runs alone; the
+                    # next should not have to.
+                    self._replace_worker(worker)
+                code, output, timed_out = self._run_alone(
+                    command, args, timeout, started)
             elapsed = time.time() - started
-
             if timed_out:
-                result = _result(False, command, proc.returncode or -1, output,
+                result = _result(False, command, code or -1, output,
                                  'timed out after %.0fs' % timeout, elapsed)
-            elif proc.returncode == 0:
+            elif code == 0:
                 result = _result(True, command, 0, output, '', elapsed)
             else:
-                result = _result(False, command, proc.returncode, output,
-                                 '%s exited %d' % (command, proc.returncode),
-                                 elapsed)
+                result = _result(False, command, code, output,
+                                 '%s exited %d' % (command, code), elapsed)
             self._last = dict(result, finished=time.time())
             print('[%s] %s in %.1fs (rc=%s)'
                   % (command, 'ok' if result['ok'] else result['error'],
@@ -490,6 +675,51 @@ class ArmService:
             self._task = None
             self._motion.release()
 
+    def _run_in_worker(self, worker, command, args, timeout, started):
+        """(exit status, output, timed_out) from the worker."""
+        print('[%s] worker: %s'
+              % (command, ' '.join(shlex.quote(str(a)) for a in args)),
+              flush=True)
+        # stop() signals this process: for a worker that aborts the command
+        # and ends the worker, which is replaced below.
+        self._task = {'name': command, 'pid': worker.proc.pid,
+                      'started': started, 'proc': worker.proc}
+        code, output, timed_out = worker.run([str(a) for a in args], timeout)
+        if code is None and not timed_out:
+            # It went without a status: killed mid-command, or it died. Its
+            # own exit code is the nearest thing to the command's.
+            try:
+                code = worker.proc.wait(timeout=10) or -1
+            except subprocess.TimeoutExpired:
+                code = -1
+        if not worker.alive():
+            self._replace_worker(worker)
+        return code, output, timed_out
+
+    def _run_alone(self, command, args, timeout, started):
+        """(exit status, output, timed_out) from a process of its own."""
+        argv = self._runner.node_argv(args)
+        print('[%s] %s' % (command, ' '.join(shlex.quote(a) for a in argv)),
+              flush=True)
+        proc = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, start_new_session=True)
+        self._task = {'name': command, 'pid': proc.pid, 'started': started,
+                      'proc': proc}
+        timed_out = False
+        try:
+            output = proc.communicate(timeout=timeout)[0]
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _kill_group(proc)
+            try:
+                output = proc.communicate(timeout=10)[0]
+            except subprocess.TimeoutExpired:
+                # A surviving grandchild still holds the pipe. The command
+                # is dead either way; report it without hanging the caller.
+                output = '(output unavailable: the pipe stayed open)'
+        return proc.returncode, output, timed_out
+
     def _release_args(self, park=''):
         """`move_to_state --open-gripper [STATE]`: the last thing the arm can
         be told, because nothing drives a servo once the launch is down.
@@ -500,8 +730,7 @@ class ArmService:
         drops where it is rather than from the park pose: the same order, for
         the same reason, as pick_place --reset.
         """
-        args = ['ros2', 'run', 'dofbot_ctrl', 'move_to_state', '--',
-                '--open-gripper']
+        args = ['move_to_state', '--open-gripper']
         if park:
             args.append(str(park))
         return args
@@ -518,7 +747,7 @@ class ArmService:
             return 'arm was not enabled; jaws left as they are'
         try:
             proc = subprocess.Popen(
-                self._runner.argv(self._release_args()),
+                self._runner.node_argv(self._release_args()),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL, text=True, start_new_session=True)
         except OSError as exc:
@@ -573,6 +802,9 @@ class ArmService:
 
     def _stop_launch(self):
         """Bring the stack down. Returns a human-readable outcome."""
+        # The worker first: it is a ROS node talking to the stack, and has
+        # nothing left to talk to once this returns.
+        self._stop_worker()
         with self._launch_lock:
             if self._launch is None:
                 return 'arm was not enabled'
@@ -624,8 +856,10 @@ class ArmService:
         Returns a result dict. Enabling twice is not an error; the second call
         reports the stack that is already up.
 
-        Once the stack is up it also warms nanoOWL (see _warm_owl), which adds
-        a second or two and never fails the enable.
+        Once the stack is up it starts arm_worker (see Worker), so commands
+        begin at once instead of after four seconds of start-up, and warms
+        nanoOWL (see _warm_owl). Each adds a second or two and neither fails
+        the enable.
 
         moveit_bridge needs exclusive access to the serial port: stop
         gui_teleop and joint_state_mirror before calling this.
@@ -655,9 +889,9 @@ class ArmService:
             # the bridge takes it for as long as the stack is up.
             jaws = ''
             if bridge and check_jaws:
-                jaw_args = ['ros2', 'run', 'dofbot_ctrl', 'check_jaws']
+                jaw_args = ['check_jaws']
                 if port:
-                    jaw_args += ['--', '--port', port]
+                    jaw_args += ['--port', port]
                 checked = self._run('check_jaws', jaw_args, JAWS_TIMEOUT)
                 jaws = _jaws_line(checked['output'])
                 if not checked['ok']:
@@ -711,11 +945,15 @@ class ArmService:
             return _result(False, 'enable_arm', error=detail,
                            output=self.tail_log(40),
                            seconds=time.time() - started)
+        with self._worker_lock:
+            self._worker_wanted = True
+        worker = self._start_worker()
+        print('[enable_arm] %s' % worker, flush=True)
         return _result(True, 'enable_arm', 0,
-                       '%s; %s floor; %s%s'
+                       '%s; %s floor; %s%s; %s'
                        % (detail, floor,
                           'jaws %s; ' % jaws if jaws else '',
-                          self._warm_owl()),
+                          worker, self._warm_owl()),
                        seconds=time.time() - started)
 
     def _warm_owl(self):
@@ -726,8 +964,7 @@ class ArmService:
         UNKNOWN. Never fails the enable: nanoOWL is often not the one running
         on the GPU, and the pick passes UNKNOWN anyway. Returns what happened.
         """
-        result = self._run('warm_owl', ['ros2', 'run', 'dofbot_ctrl',
-                                        'vision_check', '--', '--warm-up'],
+        result = self._run('warm_owl', ['vision_check', '--warm-up'],
                            VISION_TIMEOUT)
         lines = result['output'].strip().splitlines()
         return lines[-1] if lines else 'nanoOWL not warmed: %s' % result['error']
@@ -789,8 +1026,7 @@ class ArmService:
                 return _result(True, 'set_torque', 0,
                                'arm is enabled; its bridge already holds '
                                'torque on')
-            result = self._run('set_torque', ['ros2', 'run', 'dofbot_ctrl',
-                                              'set_torque', 'on'], timeout)
+            result = self._run('set_torque', ['set_torque', 'on'], timeout)
             if result['ok']:
                 result['output'] += ('\ntorque on; the arm is still disabled '
                                      '-- enable_arm() to command it')
@@ -801,8 +1037,7 @@ class ArmService:
             gone = self.disable_arm()
             disabled = ('torque off disables the arm: %s; '
                         % gone['output'].strip())
-        result = self._run('set_torque', ['ros2', 'run', 'dofbot_ctrl',
-                                          'set_torque', 'off'], timeout)
+        result = self._run('set_torque', ['set_torque', 'off'], timeout)
         result['output'] = (disabled + result['output']
                             + ('\narm disabled and limp -- support it; '
                                'enable_arm() turns torque back on'
@@ -836,7 +1071,7 @@ class ArmService:
         blocked = self._require_enabled('pick_can')
         if blocked:
             return blocked
-        args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--pick']
+        args = ['pick_place', '--pick']
         if object:
             args += ['--object', str(object)]
         if not vision:
@@ -865,7 +1100,7 @@ class ArmService:
         blocked = self._require_enabled('can_pick')
         if blocked:
             return blocked
-        args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--check']
+        args = ['pick_place', '--check']
         if object:
             args += ['--object', str(object)]
         args += ['%g' % float(x), '%g' % float(y), '%g' % float(z)]
@@ -885,7 +1120,7 @@ class ArmService:
         blocked = self._require_enabled('place_can')
         if blocked:
             return blocked
-        args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--place']
+        args = ['pick_place', '--place']
         return self._run('place_can', args, timeout)
 
     def drop_can(self, timeout=STATE_TIMEOUT):
@@ -898,7 +1133,7 @@ class ArmService:
         blocked = self._require_enabled('drop_can')
         if blocked:
             return blocked
-        args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--drop']
+        args = ['pick_place', '--drop']
         return self._run('drop_can', args, timeout)
 
     def grip_can(self, delay=GRIP_DELAY, object='', timeout=STATE_TIMEOUT):
@@ -923,7 +1158,7 @@ class ArmService:
         blocked = self._require_enabled('grip_can')
         if blocked:
             return blocked
-        args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--', '--grip',
+        args = ['pick_place', '--grip',
                 '--grip-delay', '%g' % delay]
         if object:
             args += ['--object', str(object)]
@@ -948,7 +1183,7 @@ class ArmService:
         blocked = self._require_enabled('move_to_state')
         if blocked:
             return blocked
-        args = ['ros2', 'run', 'dofbot_ctrl', 'move_to_state', '--', name]
+        args = ['move_to_state', name]
         return self._run('move_to_state', args, timeout)
 
     def reset_arm(self, state=RESET_STATE, force=False, timeout=RESET_TIMEOUT):
@@ -982,8 +1217,7 @@ class ArmService:
         blocked = self._require_enabled('reset_arm')
         if blocked:
             return blocked
-        args = ['ros2', 'run', 'dofbot_ctrl', 'pick_place', '--',
-                '--reset', state]
+        args = ['pick_place', '--reset', state]
         if force:
             args.append('--force')
         return self._run('reset_arm', args, timeout)
@@ -1031,8 +1265,7 @@ class ArmService:
         blocked = self._require_enabled('wave_arm')
         if blocked:
             return blocked
-        args = ['ros2', 'run', 'dofbot_ctrl', 'wave_arm', '--',
-                '--waves', str(waves)]
+        args = ['wave_arm', '--waves', str(waves)]
         if finish:
             args += ['--finish', finish]
         if seconds > 0:
@@ -1074,7 +1307,7 @@ class ArmService:
             object:  catalogue entry to look for; '' means the node's default.
             timeout: seconds before the command is killed.
         """
-        args = ['ros2', 'run', 'dofbot_ctrl', 'vision_check', '--', '--held']
+        args = ['vision_check', '--held']
         if object:
             args += ['--object', str(object)]
         result = self._run('is_holding', args, timeout)
@@ -1108,7 +1341,7 @@ class ArmService:
             object:  catalogue entry; '' means the node's default.
             timeout: seconds before the command is killed.
         """
-        args = ['ros2', 'run', 'dofbot_ctrl', 'vision_check', '--', '--color']
+        args = ['vision_check', '--color']
         if object:
             args += ['--object', str(object)]
         result = self._run('held_color', args, timeout)
@@ -1140,7 +1373,7 @@ class ArmService:
         blocked = self._require_enabled('current_state')
         if blocked:
             return dict(blocked, state=None)
-        args = ['ros2', 'run', 'dofbot_ctrl', 'move_to_state', '--', '--where']
+        args = ['move_to_state', '--where']
         result = self._run('current_state', args, timeout)
         state = None
         for line in reversed((result['output'] or '').splitlines()):
@@ -1163,8 +1396,7 @@ class ArmService:
             return list(self._states)
         try:
             out = subprocess.run(
-                self._runner.argv(['ros2', 'run', 'dofbot_ctrl',
-                                   'move_to_state', '--', '--list']),
+                self._runner.node_argv(['move_to_state', '--list']),
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 text=True, timeout=60).stdout
         except (subprocess.TimeoutExpired, OSError):
@@ -1214,6 +1446,7 @@ class ArmService:
             'launch_args': list(self._launch_argv),
             'floor': self._floor if self._launch_alive() else '',
             'launch_log': self._launch_log,
+            'worker': self._worker is not None and self._worker.alive(),
             'busy': task is not None,
             'running': task['name'] if task else '',
             'running_for': round(time.time() - task['started'], 1) if task else 0.0,
